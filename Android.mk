@@ -4,7 +4,13 @@ LOCAL_PATH:= $(call my-dir)
 ifneq (,$(filter linux darwin,$(HOST_OS)))
 
 # The versions depend on $(LOCAL_PATH)/VERSION
-version_CFLAGS := -DF2FS_MAJOR_VERSION=1 -DF2FS_MINOR_VERSION=8 -DF2FS_TOOLS_VERSION=\"1.8.0\" -DF2FS_TOOLS_DATE=\"2017-02-03\"
+common_CFLAGS := -DF2FS_MAJOR_VERSION=1 -DF2FS_MINOR_VERSION=8 -DF2FS_TOOLS_VERSION=\"1.8.0\" -DF2FS_TOOLS_DATE=\"2017-02-03\"
+
+# fsck.f2fs forces a full file system scan whenever /proc/version changes
+# Perform this check only when it's a release build
+ifneq ($(TARGET_BUILD_VARIANT), user)
+    common_CFLAGS += -DDISABLE_VERSION_CHECK
+endif
 
 # external/e2fsprogs/lib is needed for uuid/uuid.h
 common_C_INCLUDES := $(LOCAL_PATH)/include external/e2fsprogs/lib/ $(LOCAL_PATH)/mkfs
@@ -16,7 +22,7 @@ include $(CLEAR_VARS)
 LOCAL_MODULE := libf2fs
 LOCAL_SRC_FILES := $(libf2fs_src_files)
 LOCAL_C_INCLUDES := $(common_C_INCLUDES)
-LOCAL_CFLAGS := $(version_CFLAGS)
+LOCAL_CFLAGS := $(common_CFLAGS)
 LOCAL_SHARED_LIBRARIES := libext2_uuid libsparse libz
 include $(BUILD_SHARED_LIBRARY)
 
@@ -24,7 +30,7 @@ include $(CLEAR_VARS)
 LOCAL_MODULE := libf2fs_static
 LOCAL_SRC_FILES := $(libf2fs_src_files)
 LOCAL_C_INCLUDES := $(common_C_INCLUDES)
-LOCAL_CFLAGS := $(version_CFLAGS)
+LOCAL_CFLAGS := $(common_CFLAGS)
 include $(BUILD_STATIC_LIBRARY)
 
 #----------------------------------------------------------
@@ -37,7 +43,7 @@ include $(CLEAR_VARS)
 LOCAL_MODULE := mkfs.f2fs
 LOCAL_SRC_FILES := $(mkfs_f2fs_src_files)
 LOCAL_C_INCLUDES := $(common_C_INCLUDES)
-LOCAL_CFLAGS := $(version_CFLAGS)
+LOCAL_CFLAGS := $(common_CFLAGS)
 LOCAL_CLANG := false
 LOCAL_SHARED_LIBRARIES := libf2fs libext2_uuid
 LOCAL_MODULE_TAGS := optional
@@ -47,7 +53,7 @@ include $(CLEAR_VARS)
 LOCAL_MODULE := libf2fs_mkfs_static
 LOCAL_SRC_FILES := $(mkfs_f2fs_src_files)
 LOCAL_C_INCLUDES := $(common_C_INCLUDES)
-LOCAL_CFLAGS := $(version_CFLAGS) -Dmain=mkfs_f2fs_main
+LOCAL_CFLAGS := $(common_CFLAGS) -Dmain=mkfs_f2fs_main
 LOCAL_MODULE_TAGS := optional
 include $(BUILD_STATIC_LIBRARY)
 
@@ -69,7 +75,7 @@ include $(CLEAR_VARS)
 LOCAL_MODULE := fsck.f2fs
 LOCAL_SRC_FILES := $(fsck_f2fs_src_files)
 LOCAL_C_INCLUDES := $(common_C_INCLUDES)
-LOCAL_CFLAGS := $(version_CFLAGS)
+LOCAL_CFLAGS := $(common_CFLAGS)
 LOCAL_SHARED_LIBRARIES := libf2fs libselinux
 LOCAL_MODULE_TAGS := optional
 include $(BUILD_EXECUTABLE)
@@ -78,7 +84,7 @@ include $(CLEAR_VARS)
 LOCAL_MODULE := libf2fs_fsck_static
 LOCAL_SRC_FILES := $(fsck_f2fs_src_files)
 LOCAL_C_INCLUDES := $(common_C_INCLUDES)
-LOCAL_CFLAGS := $(version_CFLAGS) -Dmain=fsck_f2fs_main
+LOCAL_CFLAGS := $(common_CFLAGS) -Dmain=fsck_f2fs_main
 LOCAL_STATIC_LIBRARIES := libselinux
 LOCAL_MODULE_TAGS := optional
 include $(BUILD_STATIC_LIBRARY)
@@ -93,8 +99,8 @@ LOCAL_SRC_FILES := \
     mkfs/f2fs_format_utils.c \
 
 LOCAL_C_INCLUDES := $(common_C_INCLUDES)
-LOCAL_CFLAGS := $(version_CFLAGS)
-LOCAL_EXPORT_CFLAGS := $(version_CFLAGS)
+LOCAL_CFLAGS := $(common_CFLAGS)
+LOCAL_EXPORT_CFLAGS := $(common_CFLAGS)
 LOCAL_EXPORT_C_INCLUDES := $(LOCAL_PATH)/include $(LOCAL_PATH)/mkfs
 include $(BUILD_HOST_STATIC_LIBRARY)
 
@@ -107,8 +113,8 @@ LOCAL_SRC_FILES := \
     mkfs/f2fs_format.c \
 
 LOCAL_C_INCLUDES := $(common_C_INCLUDES)
-LOCAL_CFLAGS := $(version_CFLAGS) -DANDROID_HOST
-LOCAL_EXPORT_CFLAGS := $(version_CFLAGS)
+LOCAL_CFLAGS := $(common_CFLAGS) -DANDROID_HOST
+LOCAL_EXPORT_CFLAGS := $(common_CFLAGS)
 LOCAL_EXPORT_C_INCLUDES := $(LOCAL_PATH)/include $(LOCAL_PATH)/mkfs
 LOCAL_STATIC_LIBRARIES := \
      libf2fs_fmt-host \
