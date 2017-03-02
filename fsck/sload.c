@@ -22,7 +22,7 @@
 #include <selinux/label.h>
 #endif
 
-#ifdef WITH_ANDROID
+#ifdef __ANDROID__
 #include <selinux/label.h>
 #include <private/android_filesystem_config.h>
 

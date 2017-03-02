@@ -4,13 +4,13 @@ LOCAL_PATH:= $(call my-dir)
 ifneq (,$(filter linux darwin,$(HOST_OS)))
 
 # The versions depend on $(LOCAL_PATH)/VERSION
-version_CFLAGS := -DF2FS_MAJOR_VERSION=1 -DF2FS_MINOR_VERSION=7 -DF2FS_TOOLS_VERSION=\"1.7.0\" -DF2FS_TOOLS_DATE=\"2016-07-28\"
+version_CFLAGS := -DF2FS_MAJOR_VERSION=1 -DF2FS_MINOR_VERSION=8 -DF2FS_TOOLS_VERSION=\"1.8.0\" -DF2FS_TOOLS_DATE=\"2017-02-03\"
 
 # external/e2fsprogs/lib is needed for uuid/uuid.h
 common_C_INCLUDES := $(LOCAL_PATH)/include external/e2fsprogs/lib/ $(LOCAL_PATH)/mkfs
 
 #----------------------------------------------------------
-libf2fs_src_files := lib/libf2fs.c lib/libf2fs_io.c lib/zbc.c
+libf2fs_src_files := lib/libf2fs.c lib/libf2fs_io.c
 
 include $(CLEAR_VARS)
 LOCAL_MODULE := libf2fs
@@ -88,12 +88,11 @@ include $(CLEAR_VARS)
 LOCAL_MODULE := libf2fs_fmt-host
 LOCAL_SRC_FILES := \
     lib/libf2fs.c \
-    lib/zbc.c \
     mkfs/f2fs_format.c \
-    mkfs/f2fs_format_utils.c \
+    mkfs/f2fs_format_utils.c
 
 LOCAL_C_INCLUDES := $(common_C_INCLUDES)
-LOCAL_CFLAGS := $(version_CFLAGS)
+LOCAL_CFLAGS := $(version_CFLAGS) -DANDROID_HOST
 LOCAL_EXPORT_CFLAGS := $(version_CFLAGS)
 LOCAL_EXPORT_C_INCLUDES := $(LOCAL_PATH)/include $(LOCAL_PATH)/mkfs
 include $(BUILD_HOST_STATIC_LIBRARY)
@@ -103,8 +102,7 @@ include $(CLEAR_VARS)
 LOCAL_MODULE := libf2fs_fmt_host_dyn
 LOCAL_SRC_FILES := \
     lib/libf2fs.c \
-    lib/zbc.c \
-    mkfs/f2fs_format.c \
+    mkfs/f2fs_format.c
 
 LOCAL_C_INCLUDES := $(common_C_INCLUDES)
 LOCAL_CFLAGS := $(version_CFLAGS) -DANDROID_HOST

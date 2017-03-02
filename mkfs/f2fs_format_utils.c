@@ -59,8 +59,10 @@ static int trim_device(int i)
 #endif
 		return 0;
 	} else if (S_ISBLK(stat_buf.st_mode)) {
+#if !defined(__ANDROID__) && !defined(ANDROID_HOST)
 		if (dev->zoned_model != F2FS_ZONED_NONE)
 			return f2fs_reset_zones(i);
+#endif
 #ifdef BLKSECDISCARD
 		if (ioctl(fd, BLKSECDISCARD, &range) < 0) {
 			MSG(0, "Info: This device doesn't support BLKSECDISCARD\n");
