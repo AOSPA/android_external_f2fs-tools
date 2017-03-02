@@ -1991,7 +1991,7 @@ int fsck_verify(struct f2fs_sb_info *sbi)
 		ret = EXIT_ERR_CODE;
 	}
 
-#ifndef WITH_ANDROID
+#ifndef __ANDROID__
 	if (nr_unref_nid && !c.ro) {
 		char ans[255] = {0};
 

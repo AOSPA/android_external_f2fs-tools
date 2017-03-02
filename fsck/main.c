@@ -601,7 +601,7 @@ fsck_again:
 	case DUMP:
 		do_dump(sbi);
 		break;
-#ifndef WITH_ANDROID
+#ifndef __ANDROID__
 	case DEFRAG:
 		ret = do_defrag(sbi);
 		if (ret)
