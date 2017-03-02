@@ -601,12 +601,12 @@ fsck_again:
 	case DUMP:
 		do_dump(sbi);
 		break;
-#ifndef __ANDROID__
 	case DEFRAG:
 		ret = do_defrag(sbi);
 		if (ret)
 			goto out_err;
 		break;
+#ifndef __ANDROID__
 	case RESIZE:
 		if (do_resize(sbi))
 			goto out_err;
