@@ -9,7 +9,7 @@
  */
 #include "fsck.h"
 
-static int get_new_sb(struct f2fs_sb_info *sbi, struct f2fs_super_block *sb)
+static int get_new_sb(struct f2fs_super_block *sb)
 {
 	u_int32_t zone_size_bytes, zone_align_start_offset;
 	u_int32_t blocks_for_sit, blocks_for_nat, blocks_for_ssa;
@@ -22,19 +22,19 @@ static int get_new_sb(struct f2fs_sb_info *sbi, struct f2fs_super_block *sb)
 	u_int32_t blks_per_seg = 1 << get_sb(log_blocks_per_seg);
 	u_int32_t segs_per_zone = get_sb(segs_per_sec) * get_sb(secs_per_zone);
 
-	set_sb(block_count, config.target_sectors >>
+	set_sb(block_count, c.target_sectors >>
 				get_sb(log_sectors_per_block));
 
 	zone_size_bytes = segment_size_bytes * segs_per_zone;
 	zone_align_start_offset =
-		(config.start_sector * config.sector_size +
+		(c.start_sector * c.sector_size +
 		2 * F2FS_BLKSIZE + zone_size_bytes - 1) /
 		zone_size_bytes * zone_size_bytes -
-		config.start_sector * config.sector_size;
+		c.start_sector * c.sector_size;
 
-	set_sb(segment_count, (config.target_sectors * config.sector_size -
+	set_sb(segment_count, (c.target_sectors * c.sector_size -
 				zone_align_start_offset) / segment_size_bytes /
-				config.segs_per_sec * config.segs_per_sec);
+				c.segs_per_sec * c.segs_per_sec);
 
 	blocks_for_sit = ALIGN(get_sb(segment_count), SIT_ENTRY_PER_BLOCK);
 	sit_segments = SEG_ALIGN(blocks_for_sit);
@@ -115,25 +115,24 @@ static int get_new_sb(struct f2fs_sb_info *sbi, struct f2fs_super_block *sb)
 						get_sb(segs_per_sec));
 
 	/* Let's determine the best reserved and overprovisioned space */
-	config.new_overprovision = get_best_overprovision(sb);
-	config.new_reserved_segments =
-		(2 * (100 / config.new_overprovision + 1) + 6) *
+	c.new_overprovision = get_best_overprovision(sb);
+	c.new_reserved_segments =
+		(2 * (100 / c.new_overprovision + 1) + 6) *
 						get_sb(segs_per_sec);
 
-	if ((get_sb(segment_count_main) - 2) < config.new_reserved_segments ||
+	if ((get_sb(segment_count_main) - 2) < c.new_reserved_segments ||
 		get_sb(segment_count_main) * blks_per_seg >
 						get_sb(block_count)) {
 		MSG(0, "\tError: Device size is not sufficient for F2FS volume, "
 			"more segment needed =%u",
-			config.new_reserved_segments -
+			c.new_reserved_segments -
 			(get_sb(segment_count_main) - 2));
 		return -1;
 	}
 	return 0;
 }
 
-static void migrate_main(struct f2fs_sb_info *sbi,
-		struct f2fs_super_block *new_sb, unsigned int offset)
+static void migrate_main(struct f2fs_sb_info *sbi, unsigned int offset)
 {
 	void *raw = calloc(BLOCK_SZ, 1);
 	struct seg_entry *se;
@@ -143,7 +142,7 @@ static void migrate_main(struct f2fs_sb_info *sbi,
 
 	ASSERT(raw != NULL);
 
-	for (i = TOTAL_SEGS(sbi); i >= 0; i--) {
+	for (i = TOTAL_SEGS(sbi) - 1; i >= 0; i--) {
 		se = get_seg_entry(sbi, i);
 		if (!se->valid_blocks)
 			continue;
@@ -171,7 +170,9 @@ static void migrate_main(struct f2fs_sb_info *sbi,
 		}
 	}
 	free(raw);
-	DBG(0, "Info: Done to migrate data and node blocks\n");
+	DBG(0, "Info: Done to migrate Main area: main_blkaddr = 0x%x -> 0x%x\n",
+				START_BLOCK(sbi, 0),
+				START_BLOCK(sbi, 0) + offset);
 }
 
 static void move_ssa(struct f2fs_sb_info *sbi, unsigned int segno,
@@ -204,17 +205,40 @@ static void migrate_ssa(struct f2fs_sb_info *sbi,
 	struct f2fs_super_block *sb = F2FS_RAW_SUPER(sbi);
 	block_t old_sum_blkaddr = get_sb(ssa_blkaddr);
 	block_t new_sum_blkaddr = get_newsb(ssa_blkaddr);
-	int segno;
+	block_t end_sum_blkaddr = get_newsb(main_blkaddr);
+	block_t expand_sum_blkaddr = new_sum_blkaddr +
+					TOTAL_SEGS(sbi) - offset;
+	block_t blkaddr;
+	int ret;
+	void *zero_block = calloc(BLOCK_SZ, 1);
+	ASSERT(zero_block);
 
-	if (new_sum_blkaddr < old_sum_blkaddr + offset) {
-		for (segno = offset; segno < TOTAL_SEGS(sbi); segno++)
-			move_ssa(sbi, segno, new_sum_blkaddr + segno - offset);
+	if (offset && new_sum_blkaddr < old_sum_blkaddr + offset) {
+		blkaddr = new_sum_blkaddr;
+		while (blkaddr < end_sum_blkaddr) {
+			if (blkaddr < expand_sum_blkaddr) {
+				move_ssa(sbi, offset++, blkaddr++);
+			} else {
+				ret = dev_write_block(zero_block, blkaddr++);
+				ASSERT(ret >=0);
+			}
+		}
 	} else {
-		for (segno = TOTAL_SEGS(sbi) - 1; segno >= offset; segno--)
-			move_ssa(sbi, segno, new_sum_blkaddr + segno - offset);
+		blkaddr = end_sum_blkaddr - 1;
+		offset = TOTAL_SEGS(sbi) - 1;
+		while (blkaddr >= new_sum_blkaddr) {
+			if (blkaddr >= expand_sum_blkaddr) {
+				ret = dev_write_block(zero_block, blkaddr--);
+				ASSERT(ret >=0);
+			} else {
+				move_ssa(sbi, offset--, blkaddr--);
+			}
+		}
 	}
 
-	DBG(0, "Info: Done to migrate SSA blocks\n");
+	DBG(0, "Info: Done to migrate SSA blocks: sum_blkaddr = 0x%x -> 0x%x\n",
+				old_sum_blkaddr, new_sum_blkaddr);
+	free(zero_block);
 }
 
 static int shrink_nats(struct f2fs_sb_info *sbi,
@@ -323,9 +347,10 @@ static void migrate_nat(struct f2fs_sb_info *sbi,
 				(block_off & ((1 << sbi->log_blocks_per_seg) - 1)));
 		ret = dev_write_block(nat_block, block_addr);
 		ASSERT(ret >= 0);
-		DBG(1, "Write NAT: %lx\n", block_addr);
+		DBG(3, "Write NAT: %lx\n", block_addr);
 	}
-	DBG(0, "Info: Done to migrate NAT blocks\n");
+	DBG(0, "Info: Done to migrate NAT blocks: nat_blkaddr = 0x%x -> 0x%x\n",
+			old_nat_blkaddr, new_nat_blkaddr);
 }
 
 static void migrate_sit(struct f2fs_sb_info *sbi,
@@ -347,7 +372,7 @@ static void migrate_sit(struct f2fs_sb_info *sbi,
 	for (index = 0; index < sit_blks; index++) {
 		ret = dev_write_block(sit_blk, get_newsb(sit_blkaddr) + index);
 		ASSERT(ret >= 0);
-		DBG(1, "Write zero sit: %x\n", get_newsb(sit_blkaddr) + index);
+		DBG(3, "Write zero sit: %x\n", get_newsb(sit_blkaddr) + index);
 	}
 
 	for (segno = 0; segno < TOTAL_SEGS(sbi); segno++) {
@@ -382,7 +407,8 @@ static void migrate_sit(struct f2fs_sb_info *sbi,
 	ASSERT(ret >= 0);
 
 	free(sit_blk);
-	DBG(0, "Info: Done to migrate SIT blocks\n");
+	DBG(0, "Info: Done to restore new SIT blocks: 0x%x\n",
+					get_newsb(sit_blkaddr));
 }
 
 static void rebuild_checkpoint(struct f2fs_sb_info *sbi,
@@ -406,20 +432,20 @@ static void rebuild_checkpoint(struct f2fs_sb_info *sbi,
 	ASSERT(buf);
 
 	/* ovp / free segments */
-	set_cp(rsvd_segment_count, config.new_reserved_segments);
+	set_cp(rsvd_segment_count, c.new_reserved_segments);
 	set_cp(overprov_segment_count, (get_newsb(segment_count_main) -
 			get_cp(rsvd_segment_count)) *
-			config.new_overprovision / 100);
+			c.new_overprovision / 100);
 	set_cp(overprov_segment_count, get_cp(overprov_segment_count) +
 						get_cp(rsvd_segment_count));
 
-	free_segment_count = get_cp(free_segment_count);
+	free_segment_count = get_free_segments(sbi);
 	new_segment_count = get_newsb(segment_count_main) -
 					get_sb(segment_count_main);
 
 	set_cp(free_segment_count, free_segment_count + new_segment_count);
 	set_cp(user_block_count, ((get_newsb(segment_count_main) -
-			get_cp(overprov_segment_count)) * config.blks_per_seg));
+			get_cp(overprov_segment_count)) * c.blks_per_seg));
 
 	if (is_set_ckpt_flags(cp, CP_ORPHAN_PRESENT_FLAG))
 		orphan_blks = __start_sum_addr(sbi) - 1;
@@ -503,8 +529,7 @@ static void rebuild_checkpoint(struct f2fs_sb_info *sbi,
 	DBG(0, "Info: Done to rebuild checkpoint blocks\n");
 }
 
-static void rebuild_superblock(struct f2fs_sb_info *sbi,
-				struct f2fs_super_block *new_sb)
+static void rebuild_superblock(struct f2fs_super_block *new_sb)
 {
 	int index, ret;
 	u_int8_t *buf;
@@ -526,14 +551,15 @@ int f2fs_resize(struct f2fs_sb_info *sbi)
 	struct f2fs_super_block new_sb_raw;
 	struct f2fs_super_block *new_sb = &new_sb_raw;
 	block_t end_blkaddr, old_main_blkaddr, new_main_blkaddr;
-	unsigned int offset, offset_seg;
+	unsigned int offset;
+	unsigned int offset_seg = 0;
 	int err = -1;
 
 	/* flush NAT/SIT journal entries */
 	flush_journal_entries(sbi);
 
 	memcpy(new_sb, F2FS_RAW_SUPER(sbi), sizeof(*new_sb));
-	if (get_new_sb(sbi, new_sb))
+	if (get_new_sb(new_sb))
 		return -1;
 
 	/* check nat availability */
@@ -545,39 +571,31 @@ int f2fs_resize(struct f2fs_sb_info *sbi)
 		}
 	}
 
-	config.dbg_lv = 1;
 	print_raw_sb_info(sb);
 	print_raw_sb_info(new_sb);
-	config.dbg_lv = 0;
 
 	old_main_blkaddr = get_sb(main_blkaddr);
 	new_main_blkaddr = get_newsb(main_blkaddr);
 	offset = new_main_blkaddr - old_main_blkaddr;
-	end_blkaddr = (get_sb(segment_count) << get_sb(log_blocks_per_seg)) +
-						get_sb(main_blkaddr);
-
-	if (old_main_blkaddr > new_main_blkaddr) {
-		MSG(0, "\tError: Support resize to expand only\n");
-		return -1;
-	}
+	end_blkaddr = (get_sb(segment_count_main) <<
+			get_sb(log_blocks_per_seg)) + get_sb(main_blkaddr);
 
 	err = -EAGAIN;
-	offset_seg = offset >> get_sb(log_blocks_per_seg);
-
 	if (new_main_blkaddr < end_blkaddr) {
 		err = f2fs_defragment(sbi, old_main_blkaddr, offset,
 						new_main_blkaddr, 0);
-		if (err)
-			MSG(0, "Skip defragement\n");
+		if (!err)
+			offset_seg = offset >> get_sb(log_blocks_per_seg);
+		MSG(0, "Try to do defragement: %s\n", err ? "Skip": "Done");
 	}
 	/* move whole data region */
 	if (err)
-		migrate_main(sbi, new_sb, offset);
+		migrate_main(sbi, offset);
 
 	migrate_ssa(sbi, new_sb, offset_seg);
 	migrate_nat(sbi, new_sb);
 	migrate_sit(sbi, new_sb, offset_seg);
 	rebuild_checkpoint(sbi, new_sb, offset_seg);
-	rebuild_superblock(sbi, new_sb);
+	rebuild_superblock(new_sb);
 	return 0;
 }

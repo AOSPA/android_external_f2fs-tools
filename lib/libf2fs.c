@@ -17,13 +17,22 @@
 #ifdef __linux__
 #include <mntent.h>
 #include <linux/hdreg.h>
+#include <linux/limits.h>
 #endif
 #include <time.h>
 #include <sys/stat.h>
 #include <sys/mount.h>
 #include <sys/ioctl.h>
+#ifndef WITH_ANDROID
+#include <scsi/sg.h>
+#endif
 
 #include <f2fs_fs.h>
+
+#ifndef WITH_ANDROID
+/* SCSI command for standard inquiry*/
+#define MODELINQUIRY	0x12,0x00,0x00,0x00,0x4A,0x00
+#endif
 
 #ifdef __ANDROID__
 char *hasmntopt (const struct mntent *mnt, const char *opt) {
@@ -502,27 +511,90 @@ int f2fs_crc_valid(u_int32_t blk_crc, void *buf, int len)
 }
 
 /*
+ * try to identify the root device
+ */
+const char *get_rootdev()
+{
+	struct stat sb;
+	int fd, ret;
+	char buf[32];
+	char *uevent, *ptr;
+
+	static char rootdev[PATH_MAX + 1];
+
+	if (stat("/", &sb) == -1)
+		return NULL;
+
+	snprintf(buf, 32, "/sys/dev/block/%u:%u/uevent",
+		major(sb.st_dev), minor(sb.st_dev));
+
+	fd = open(buf, O_RDONLY);
+
+	if (fd < 0)
+		return NULL;
+
+	ret = lseek(fd, (off_t)0, SEEK_END);
+	(void)lseek(fd, (off_t)0, SEEK_SET);
+
+	if (ret == -1) {
+		close(fd);
+		return NULL;
+	}
+
+	uevent = malloc(ret + 1);
+	uevent[ret] = '\0';
+
+	ret = read(fd, uevent, ret);
+	close(fd);
+
+	ptr = strstr(uevent, "DEVNAME");
+	if (!ptr)
+		return NULL;
+
+	ret = sscanf(ptr, "DEVNAME=%s\n", buf);
+	snprintf(rootdev, PATH_MAX + 1, "/dev/%s", buf);
+
+	return rootdev;
+}
+
+/*
  * device information
  */
-void f2fs_init_configuration(struct f2fs_configuration *c)
+void f2fs_init_configuration(void)
 {
-	c->total_sectors = 0;
-	c->sector_size = DEFAULT_SECTOR_SIZE;
-	c->sectors_per_blk = DEFAULT_SECTORS_PER_BLOCK;
-	c->blks_per_seg = DEFAULT_BLOCKS_PER_SEGMENT;
+	int i;
+
+	c.ndevs = 1;
+	c.total_sectors = 0;
+	c.sector_size = 0;
+	c.sectors_per_blk = DEFAULT_SECTORS_PER_BLOCK;
+	c.blks_per_seg = DEFAULT_BLOCKS_PER_SEGMENT;
+	c.rootdev_name = get_rootdev();
+	c.wanted_total_sectors = -1;
+	c.zoned_mode = 0;
+	c.zoned_model = 0;
+	c.zone_blocks = 0;
+
+	for (i = 0; i < MAX_DEVICES; i++) {
+		memset(&c.devices[i], 0, sizeof(struct device_info));
+		c.devices[i].fd = -1;
+		c.devices[i].sector_size = DEFAULT_SECTOR_SIZE;
+		c.devices[i].end_blkaddr = -1;
+		c.devices[i].zoned_model = F2FS_ZONED_NONE;
+	}
 
 	/* calculated by overprovision ratio */
-	c->reserved_segments = 0;
-	c->overprovision = 0;
-	c->segs_per_sec = 1;
-	c->secs_per_zone = 1;
-	c->segs_per_zone = 1;
-	c->heap = 1;
-	c->vol_label = "";
-	c->device_name = NULL;
-	c->trim = 1;
-	c->bytes_reserved = 0;
-	c->ro = 0;
+	c.reserved_segments = 0;
+	c.overprovision = 0;
+	c.segs_per_sec = 1;
+	c.secs_per_zone = 1;
+	c.segs_per_zone = 1;
+	c.heap = 1;
+	c.vol_label = "";
+	c.trim = 1;
+	c.ro = 0;
+	c.kd = -1;
+	c.bytes_reserved = 0;
 }
 
 static int is_mounted(const char *mpt, const char *device)
@@ -542,7 +614,7 @@ static int is_mounted(const char *mpt, const char *device)
 #else
 			if (hasmntopt(mnt, "ro"))
 #endif
-				config.ro = 1;
+				c.ro = 1;
 			break;
 		}
 	}
@@ -554,26 +626,43 @@ static int is_mounted(const char *mpt, const char *device)
 #endif
 }
 
-int f2fs_dev_is_umounted(struct f2fs_configuration *c)
+int f2fs_dev_is_umounted(char *path)
 {
 	struct stat st_buf;
+	int is_rootdev = 0;
 	int ret = 0;
+
+	if (c.rootdev_name && !strcmp(path, c.rootdev_name))
+		is_rootdev = 1;
 
 	/*
 	 * try with /proc/mounts fist to detect RDONLY.
 	 * f2fs_stop_checkpoint makes RO in /proc/mounts while RW in /etc/mtab.
 	 */
-	ret = is_mounted("/proc/mounts", c->device_name);
+	ret = is_mounted("/proc/mounts", path);
 	if (ret) {
 		MSG(0, "Info: Mounted device!\n");
 		return -1;
 	}
 
 #ifdef __linux__
-	ret = is_mounted(MOUNTED, c->device_name);
+	ret = is_mounted(MOUNTED, path);
 	if (ret) {
 		MSG(0, "Info: Mounted device!\n");
 		return -1;
+	}
+
+	/*
+	 * If we are supposed to operate on the root device, then
+	 * also check the mounts for '/dev/root', which sometimes
+	 * functions as an alias for the root device.
+	 */
+	if (is_rootdev) {
+		ret = is_mounted("/proc/mounts", "/dev/root");
+		if (ret) {
+			MSG(0, "Info: Mounted device!\n");
+			return -1;
+		}
 	}
 #endif
 
@@ -581,8 +670,8 @@ int f2fs_dev_is_umounted(struct f2fs_configuration *c)
 	 * If f2fs is umounted with -l, the process can still use
 	 * the file system. In this case, we should not format.
 	 */
-	if (stat(c->device_name, &st_buf) == 0 && S_ISBLK(st_buf.st_mode)) {
-		int fd = open(c->device_name, O_RDONLY | O_EXCL);
+	if (stat(path, &st_buf) == 0 && S_ISBLK(st_buf.st_mode)) {
+		int fd = open(path, O_RDONLY | O_EXCL);
 
 		if (fd >= 0) {
 			close(fd);
@@ -591,6 +680,16 @@ int f2fs_dev_is_umounted(struct f2fs_configuration *c)
 			return -1;
 		}
 	}
+	return 0;
+}
+
+int f2fs_devs_are_umounted(void)
+{
+	int i;
+
+	for (i = 0; i < c.ndevs; i++)
+		if (f2fs_dev_is_umounted((char *)c.devices[i].path))
+			return -1;
 	return 0;
 }
 
@@ -604,7 +703,7 @@ void get_kernel_version(__u8 *version)
 	memset(version + i, 0, VERSION_LEN + 1 - i);
 }
 
-int f2fs_get_device_info(struct f2fs_configuration *c)
+int get_device_info(int i)
 {
 	int32_t fd = 0;
 	uint32_t sector_size;
@@ -615,18 +714,28 @@ int f2fs_get_device_info(struct f2fs_configuration *c)
 #ifdef __linux__
 	struct hd_geometry geom;
 #endif
-	u_int64_t wanted_total_sectors = c->total_sectors;
+#ifndef WITH_ANDROID
+	sg_io_hdr_t io_hdr;
+	unsigned char reply_buffer[96] = {0};
+	unsigned char model_inq[6] = {MODELINQUIRY};
+#endif
+	struct device_info *dev = c.devices + i;
 
-	fd = open(c->device_name, O_RDWR);
+	fd = open((char *)dev->path, O_RDWR);
 	if (fd < 0) {
 		MSG(0, "\tError: Failed to open the device!\n");
 		return -1;
 	}
-	c->fd = fd;
 
-	c->kd = open("/proc/version", O_RDONLY);
-	if (c->kd < 0)
-		MSG(0, "\tInfo: No support kernel version!\n");
+	dev->fd = fd;
+
+	if (c.kd == -1) {
+		c.kd = open("/proc/version", O_RDONLY);
+		if (c.kd < 0) {
+			MSG(0, "\tInfo: No support kernel version!\n");
+			c.kd = -2;
+		}
+	}
 
 	if (fstat(fd, &stat_buf) < 0 ) {
 		MSG(0, "\tError: Failed to get the device stat!\n");
@@ -634,108 +743,180 @@ int f2fs_get_device_info(struct f2fs_configuration *c)
 	}
 
 	if (S_ISREG(stat_buf.st_mode)) {
-		if (c->bytes_reserved >= stat_buf.st_size) {
+		if (c.bytes_reserved >= stat_buf.st_size) {
 			MSG(0, "\n\Error: reserved bytes (%u) is bigger than the device size (%u bytes)\n",
-			    (unsigned int) c->bytes_reserved,
+			    (unsigned int) c.bytes_reserved,
 			    (unsigned int) stat_buf.st_size);
 			return -1;
 		}
 
-		c->total_sectors = (stat_buf.st_size - c->bytes_reserved) / c->sector_size;
+		dev->total_sectors = (stat_buf.st_size - c.bytes_reserved) / dev->sector_size;
 
-                if (c->bytes_reserved) {
-                        MSG(0, "Info: Reserved %u bytes ", (unsigned int) c->bytes_reserved);
+                if (c.bytes_reserved) {
+                        MSG(0, "Info: Reserved %u bytes ", (unsigned int) c.bytes_reserved);
                         MSG(0, "from device of size %u sectors\n",
-			    (unsigned int) (stat_buf.st_size / c->sector_size));
+			    (unsigned int) (stat_buf.st_size / dev->sector_size));
                 }
 #ifdef __linux__
 	} else if (S_ISBLK(stat_buf.st_mode)) {
-		if (ioctl(fd, BLKSSZGET, &sector_size) < 0) {
+		if (ioctl(fd, BLKSSZGET, &sector_size) < 0)
 			MSG(0, "\tError: Using the default sector size\n");
-		} else {
-			if (c->sector_size < sector_size) {
-				c->sector_size = sector_size;
-				c->sectors_per_blk = PAGE_SIZE / sector_size;
-			}
-		}
-
+		else if (dev->sector_size < sector_size)
+			dev->sector_size = sector_size;
 #ifdef BLKGETSIZE64
-		if (ioctl(fd, BLKGETSIZE64, &c->total_sectors) < 0) {
+		if (ioctl(fd, BLKGETSIZE64, &dev->total_sectors) < 0) {
 			MSG(0, "\tError: Cannot get the device size\n");
 			return -1;
 		}
-		c->total_sectors /= c->sector_size;
 #else
 		if (ioctl(fd, BLKGETSIZE, &total_sectors) < 0) {
 			MSG(0, "\tError: Cannot get the device size\n");
 			return -1;
 		}
-		total_sectors /= c->sector_size;
-		c->total_sectors = total_sectors;
+		dev->total_sectors = total_sectors;
 #endif
+		dev->total_sectors /= dev->sector_size;
 
-		if (c->bytes_reserved) {
+		if (c.bytes_reserved) {
 			unsigned int reserved_sectors;
 
-			reserved_sectors = c->bytes_reserved / c->sector_size;
-			if (c->bytes_reserved % c->sector_size) {reserved_sectors++;}
+			reserved_sectors = c.bytes_reserved / dev->sector_size;
+			if (c.bytes_reserved % dev->sector_size) {reserved_sectors++;}
 
-			if(reserved_sectors >= c->total_sectors) {
+			if(reserved_sectors >= dev->total_sectors) {
 				MSG(0, "\n\Error: reserved bytes (%u sectors) is bigger than the device size (%u sectors)\n",
 				    (unsigned int) reserved_sectors,
-				    (unsigned int) c->total_sectors);
+				    (unsigned int) dev->total_sectors);
 				return -1;
 			}
 
 			MSG(0, "\n");
 			MSG(0, "Info: Reserved %u sectors ", (unsigned int) reserved_sectors);
 			MSG(0, "from device of size %u sectors\n",
-			    (unsigned int) c->total_sectors);
+			    (unsigned int) dev->total_sectors);
 
-			c->total_sectors -= reserved_sectors;
+			dev->total_sectors -= reserved_sectors;
 		}
 
 		if (ioctl(fd, HDIO_GETGEO, &geom) < 0)
-			c->start_sector = 0;
+			c.start_sector = 0;
 		else
-			c->start_sector = geom.start;
+			c.start_sector = geom.start;
+#endif
+
+#ifndef WITH_ANDROID
+		/* Send INQUIRY command */
+		memset(&io_hdr, 0, sizeof(sg_io_hdr_t));
+		io_hdr.interface_id = 'S';
+		io_hdr.dxfer_direction = SG_DXFER_FROM_DEV;
+		io_hdr.dxfer_len = sizeof(reply_buffer);
+		io_hdr.dxferp = reply_buffer;
+		io_hdr.cmd_len = sizeof(model_inq);
+		io_hdr.cmdp = model_inq;
+		io_hdr.timeout = 1000;
+
+		if (!ioctl(fd, SG_IO, &io_hdr)) {
+			int i = 16;
+
+			MSG(0, "Info: [%s] Disk Model: ",
+					dev->path);
+			while (reply_buffer[i] != '`' && i < 80)
+				printf("%c", reply_buffer[i++]);
+			printf("\n");
+		}
 #endif
 	} else {
 		MSG(0, "\tError: Volume type is not supported!!!\n");
 		return -1;
 	}
-	if (wanted_total_sectors && wanted_total_sectors < c->total_sectors) {
-		MSG(0, "Info: total device sectors = %"PRIu64" (in %u bytes)\n",
-					c->total_sectors, c->sector_size);
-		c->total_sectors = wanted_total_sectors;
 
+	if (!c.sector_size) {
+		c.sector_size = dev->sector_size;
+		c.sectors_per_blk = F2FS_BLKSIZE / c.sector_size;
+	} else if (c.sector_size != c.devices[i].sector_size) {
+		MSG(0, "\tError: Different sector sizes!!!\n");
+		return -1;
 	}
-	if (c->total_sectors * c->sector_size >
+
+#ifndef WITH_ANDROID
+	if (S_ISBLK(stat_buf.st_mode))
+		f2fs_get_zoned_model(i);
+
+	if (dev->zoned_model != F2FS_ZONED_NONE) {
+		if (dev->zoned_model == F2FS_ZONED_HM)
+			c.zoned_model = F2FS_ZONED_HM;
+
+		if (f2fs_get_zone_blocks(i)) {
+			MSG(0, "\tError: Failed to get number of blocks per zone\n");
+			return -1;
+		}
+
+		if (f2fs_check_zones(i)) {
+			MSG(0, "\tError: Failed to check zone configuration\n");
+			return -1;
+		}
+		MSG(0, "Info: Host-%s zoned block device:\n",
+				(dev->zoned_model == F2FS_ZONED_HA) ?
+					"aware" : "managed");
+		MSG(0, "      %u zones, %u randomly writeable zones\n",
+				dev->nr_zones, dev->nr_rnd_zones);
+		MSG(0, "      %lu blocks per zone\n",
+				dev->zone_blocks);
+	}
+#endif
+	c.total_sectors += dev->total_sectors;
+	return 0;
+}
+
+int f2fs_get_device_info(void)
+{
+	int i;
+
+	for (i = 0; i < c.ndevs; i++)
+		if (get_device_info(i))
+			return -1;
+
+	if (c.wanted_total_sectors < c.total_sectors) {
+		MSG(0, "Info: total device sectors = %"PRIu64" (in %u bytes)\n",
+				c.total_sectors, c.sector_size);
+		c.total_sectors = c.wanted_total_sectors;
+		c.devices[0].total_sectors = c.total_sectors;
+	}
+	if (c.total_sectors * c.sector_size >
 		(u_int64_t)F2FS_MAX_SEGMENT * 2 * 1024 * 1024) {
 		MSG(0, "\tError: F2FS can support 16TB at most!!!\n");
 		return -1;
 	}
 
-	if (config.smr_mode) {
-		if (zbc_scsi_report_zones(c)) {
-			MSG(0, "\tError: Not proper SMR drive\n");
-			return -1;
+	for (i = 0; i < c.ndevs; i++) {
+		if (c.devices[i].zoned_model != F2FS_ZONED_NONE) {
+			if (c.zone_blocks &&
+				c.zone_blocks != c.devices[i].zone_blocks) {
+				MSG(0, "\tError: not support different zone sizes!!!\n");
+				return -1;
+			}
+			c.zone_blocks = c.devices[i].zone_blocks;
 		}
-		MSG(0, "Info: SMR - ZONES = %u, CONV = %u, ZONE_SECTS = %lu\n",
-				c->nr_zones, c->nr_conventional,
-				c->zone_sectors);
-		if (c->segs_per_sec == 1)
-			c->segs_per_sec = c->zone_sectors /
-				c->sectors_per_blk / DEFAULT_BLOCKS_PER_SEGMENT;
 	}
-	c->segs_per_zone = c->segs_per_sec * c->secs_per_zone;
 
-	MSG(0, "Info: Segments per section = %d\n", config.segs_per_sec);
-	MSG(0, "Info: Sections per zone = %d\n", config.secs_per_zone);
-	MSG(0, "Info: sector size = %u\n", c->sector_size);
+	/*
+	 * Align sections to the device zone size
+	 * and align F2FS zones to the device zones.
+	 */
+	if (c.zone_blocks) {
+		c.segs_per_sec = c.zone_blocks / DEFAULT_BLOCKS_PER_SEGMENT;
+		c.secs_per_zone = 1;
+	} else {
+		c.zoned_mode = 0;
+	}
+
+	c.segs_per_zone = c.segs_per_sec * c.secs_per_zone;
+
+	MSG(0, "Info: Segments per section = %d\n", c.segs_per_sec);
+	MSG(0, "Info: Sections per zone = %d\n", c.secs_per_zone);
+	MSG(0, "Info: sector size = %u\n", c.sector_size);
 	MSG(0, "Info: total sectors = %"PRIu64" (%"PRIu64" MB)\n",
-				c->total_sectors, (c->total_sectors *
-					(c->sector_size >> 9)) >> 11);
+				c.total_sectors, (c.total_sectors *
+					(c.sector_size >> 9)) >> 11);
 	return 0;
 }
-

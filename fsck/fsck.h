@@ -21,6 +21,14 @@ enum {
 	PREEN_MODE_MAX
 };
 
+enum {
+	NOERROR,
+	EWRONG_OPT,
+	ENEED_ARG,
+	EUNKNOWN_OPT,
+	EUNKNOWN_ARG,
+};
+
 /* fsck.c */
 struct orphan_info {
 	u32 nr_inodes;
@@ -58,7 +66,6 @@ struct f2fs_fsck {
 		u32 multi_hard_link_files;
 		u64 sit_valid_blocks;
 		u32 sit_free_segs;
-		u32 free_segs;
 	} chk;
 
 	struct hard_link_node *hard_link_list_head;
@@ -110,7 +117,7 @@ enum seg_type {
 
 struct selabel_handle;
 
-extern void fsck_chk_orphan_node(struct f2fs_sb_info *);
+extern int fsck_chk_orphan_node(struct f2fs_sb_info *);
 extern int fsck_chk_node_blk(struct f2fs_sb_info *, struct f2fs_inode *, u32,
 		u8 *, enum FILE_TYPE, enum NODE_TYPE, u32 *,
 		struct child_info *);
@@ -130,10 +137,11 @@ extern int fsck_chk_dentry_blk(struct f2fs_sb_info *, u32, struct child_info *,
 int fsck_chk_inline_dentries(struct f2fs_sb_info *, struct f2fs_node *,
 		struct child_info *);
 int fsck_chk_meta(struct f2fs_sb_info *sbi);
+int convert_encrypted_name(unsigned char *, int, unsigned char *, int);
 
 extern void update_free_segments(struct f2fs_sb_info *);
 void print_cp_state(u32);
-extern void print_node_info(struct f2fs_node *);
+extern void print_node_info(struct f2fs_node *, int);
 extern void print_inode_info(struct f2fs_inode *, int);
 extern struct seg_entry *get_seg_entry(struct f2fs_sb_info *, unsigned int);
 extern struct f2fs_summary_block *get_sum_block(struct f2fs_sb_info *,
@@ -164,6 +172,12 @@ extern void update_nat_blkaddr(struct f2fs_sb_info *, nid_t, nid_t, block_t);
 
 extern void print_raw_sb_info(struct f2fs_super_block *);
 
+extern u32 get_free_segments(struct f2fs_sb_info *);
+extern struct f2fs_sit_block *get_current_sit_page(struct f2fs_sb_info *,
+			unsigned int);
+extern void rewrite_current_sit_page(struct f2fs_sb_info *, unsigned int,
+			struct f2fs_sit_block *);
+
 /* dump.c */
 struct dump_option {
 	nid_t nid;
@@ -176,10 +190,10 @@ struct dump_option {
 	int32_t blk_addr;
 };
 
-extern void nat_dump(struct f2fs_sb_info *, int, int);
-extern void sit_dump(struct f2fs_sb_info *, int, int);
+extern void nat_dump(struct f2fs_sb_info *);
+extern void sit_dump(struct f2fs_sb_info *, unsigned int, unsigned int);
 extern void ssa_dump(struct f2fs_sb_info *, int, int);
-extern void dump_node(struct f2fs_sb_info *, nid_t);
+extern void dump_node(struct f2fs_sb_info *, nid_t, int);
 extern int dump_info_from_blkaddr(struct f2fs_sb_info *, u32);
 
 /* defrag.c */

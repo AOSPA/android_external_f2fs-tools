@@ -43,6 +43,10 @@ typedef __u64 __be64;
 #include <config.h>
 #endif
 
+#ifdef HAVE_LINUX_BLKZONED_H
+#include <linux/blkzoned.h>
+#endif
+
 typedef u_int64_t	u64;
 typedef u_int32_t	u32;
 typedef u_int16_t	u16;
@@ -149,7 +153,7 @@ static inline uint64_t bswap_64(uint64_t val)
 	do {								\
 		printf("[ASSERT] (%s:%4d) ", __func__, __LINE__);	\
 		printf(" --> "fmt"\n", ##__VA_ARGS__);			\
-		config.bug_on = 1;					\
+		c.bug_on = 1;						\
 	} while (0)
 
 #define ASSERT(exp)							\
@@ -168,14 +172,14 @@ static inline uint64_t bswap_64(uint64_t val)
 
 #define MSG(n, fmt, ...)						\
 	do {								\
-		if (config.dbg_lv >= n) {				\
+		if (c.dbg_lv >= n) {					\
 			printf(fmt, ##__VA_ARGS__);			\
 		}							\
 	} while (0)
 
 #define DBG(n, fmt, ...)						\
 	do {								\
-		if (config.dbg_lv >= n) {				\
+		if (c.dbg_lv >= n) {					\
 			printf("[%s:%4d] " fmt,				\
 				__func__, __LINE__, ##__VA_ARGS__);	\
 		}							\
@@ -190,15 +194,17 @@ static inline uint64_t bswap_64(uint64_t val)
 #define DISP_u32(ptr, member)						\
 	do {								\
 		assert(sizeof((ptr)->member) <= 4);			\
-		printf("%-30s" "\t\t[0x%8x : %u]\n",		\
-			#member, ((ptr)->member), ((ptr)->member));	\
+		printf("%-30s" "\t\t[0x%8x : %u]\n",			\
+			#member, le32_to_cpu(((ptr)->member)),		\
+			le32_to_cpu(((ptr)->member)));			\
 	} while (0)
 
 #define DISP_u64(ptr, member)						\
 	do {								\
 		assert(sizeof((ptr)->member) == 8);			\
 		printf("%-30s" "\t\t[0x%8llx : %llu]\n",		\
-			#member, ((ptr)->member), ((ptr)->member));	\
+			#member, le64_to_cpu(((ptr)->member)),		\
+			le64_to_cpu(((ptr)->member)));			\
 	} while (0)
 
 #define DISP_utf(ptr, member)						\
@@ -232,6 +238,8 @@ static inline uint64_t bswap_64(uint64_t val)
 #define BITS_PER_BYTE		8
 #define F2FS_SUPER_MAGIC	0xF2F52010	/* F2FS Magic Number */
 #define CHECKSUM_OFFSET		4092
+#define MAX_PATH_LEN		64
+#define MAX_DEVICES		8
 
 #define F2FS_BYTES_TO_BLK(bytes)    ((bytes) >> F2FS_BLKSIZE_BITS)
 #define F2FS_BLKSIZE_BITS 12
@@ -253,36 +261,28 @@ enum f2fs_config_func {
 	SLOAD,
 };
 
-enum zbc_sk {
-	ZBC_E_ILLEGAL_REQUEST         = 0x5,
-	ZBC_E_DATA_PROTECT            = 0x7,
-	ZBC_E_ABORTED_COMMAND         = 0xB,
-};
+struct device_info {
+	char *path;
+	int32_t fd;
+	u_int32_t sector_size;
+	u_int64_t total_sectors;	/* got by get_device_info */
+	u_int64_t start_blkaddr;
+	u_int64_t end_blkaddr;
+	u_int32_t total_segments;
 
-/**
- * Additional sense code/Additional sense code qualifier.
- */
-enum zbc_asc_ascq {
-	ZBC_E_INVALID_FIELD_IN_CDB                  = 0x2400,
-	ZBC_E_LOGICAL_BLOCK_ADDRESS_OUT_OF_RANGE    = 0x2100,
-	ZBC_E_UNALIGNED_WRITE_COMMAND               = 0x2104,
-	ZBC_E_WRITE_BOUNDARY_VIOLATION              = 0x2105,
-	ZBC_E_ATTEMPT_TO_READ_INVALID_DATA          = 0x2106,
-	ZBC_E_READ_BOUNDARY_VIOLATION               = 0x2107,
-	ZBC_E_ZONE_IS_READ_ONLY                     = 0x2708,
-	ZBC_E_INSUFFICIENT_ZONE_RESOURCES           = 0x550E,
+	/* to handle zone block devices */
+	int zoned_model;
+	u_int32_t nr_zones;
+	u_int32_t nr_rnd_zones;
+	size_t zone_blocks;
 };
-
-struct zbc_errno {
-	enum zbc_sk		sk;
-	enum zbc_asc_ascq	asc_ascq;
-};
-typedef struct zbc_errno zbc_errno_t;
 
 struct f2fs_configuration {
-	u_int32_t sector_size;
 	u_int32_t reserved_segments;
 	u_int32_t new_reserved_segments;
+	int zoned_mode;
+	int zoned_model;
+	size_t zone_blocks;
 	double overprovision;
 	double new_overprovision;
 	u_int32_t cur_seg[6];
@@ -290,7 +290,10 @@ struct f2fs_configuration {
 	u_int32_t secs_per_zone;
 	u_int32_t segs_per_zone;
 	u_int32_t start_sector;
+	u_int32_t total_segments;
+	u_int32_t sector_size;
 	u_int64_t total_sectors;
+	u_int64_t wanted_total_sectors;
 	u_int64_t target_sectors;
 	u_int32_t sectors_per_blk;
 	u_int32_t blks_per_seg;
@@ -300,10 +303,12 @@ struct f2fs_configuration {
 	char *vol_label;
 	u_int32_t bytes_reserved;
 	int heap;
-	int32_t fd, kd;
+	int32_t kd;
 	int32_t dump_fd;
-	char *device_name;
+	struct device_info devices[MAX_DEVICES];
+	int ndevs;
 	char *extension_list;
+	const char *rootdev_name;
 	int dbg_lv;
 	int trim;
 	int func;
@@ -324,13 +329,6 @@ struct f2fs_configuration {
 	/* sload parameters */
 	char *from_dir;
 	char *mount_point;
-
-	/* to detect zbc error */
-	int smr_mode;
-	u_int32_t nr_zones;
-	u_int32_t nr_conventional;
-	size_t zone_sectors;
-	zbc_errno_t zbd_errno;
 } __attribute__((packed));
 
 #ifdef CONFIG_64BIT
@@ -445,6 +443,8 @@ enum {
 	NO_CHECK_TYPE
 };
 
+#define F2FS_MIN_SEGMENTS	9 /* SB + 2 (CP + SIT + NAT) + SSA + MAIN */
+
 /*
  * Copied from fs/f2fs/segment.h
  */
@@ -482,13 +482,18 @@ enum {
 #define MAX_ACTIVE_DATA_LOGS	8
 
 #define F2FS_FEATURE_ENCRYPT	0x0001
-#define F2FS_FEATURE_HMSMR	0x0002
+#define F2FS_FEATURE_BLKZONED	0x0002
 
 #define MAX_VOLUME_NAME		512
 
 /*
  * For superblock
  */
+struct f2fs_device {
+	__u8 path[MAX_PATH_LEN];
+	__le32 total_segments;
+} __attribute__((packed));
+
 struct f2fs_super_block {
 	__le32 magic;			/* Magic Number */
 	__le16 major_ver;		/* Major Version */
@@ -527,7 +532,8 @@ struct f2fs_super_block {
 	__le32 feature;			/* defined features */
 	__u8 encryption_level;		/* versioning level for encryption */
 	__u8 encrypt_pw_salt[16];	/* Salt used for string2key algorithm */
-	__u8 reserved[871];		/* valid reserved region */
+	struct f2fs_device devs[MAX_DEVICES];	/* device list */
+	__u8 reserved[327];		/* valid reserved region */
 } __attribute__((packed));
 
 /*
@@ -630,7 +636,7 @@ struct f2fs_extent {
 #define FADVISE_LOST_PINO_BIT  0x02
 #define FADVISE_ENCRYPT_BIT    0x04
 
-#define file_is_encrypt(i_advise)      ((i_advise) & FADVISE_ENCRYPT_BIT)
+#define file_is_encrypt(fi)      ((fi)->i_advise & FADVISE_ENCRYPT_BIT)
 
 struct f2fs_inode {
 	__le16 i_mode;			/* file mode */
@@ -733,7 +739,7 @@ struct f2fs_nat_block {
 #define F2FS_MAX_SEGMENT       ((16 * 1024 * 1024) / 2)
 #define MAX_SIT_BITMAP_SIZE    (SEG_ALIGN(ALIGN(F2FS_MAX_SEGMENT, \
 						SIT_ENTRY_PER_BLOCK)) * \
-						config.blks_per_seg / 8)
+						c.blks_per_seg / 8)
 
 /*
  * Note that f2fs_sit_entry->vblocks has the following bit-field information.
@@ -935,7 +941,7 @@ struct f2fs_inline_dentry {
 	__u8 reserved[INLINE_RESERVED_SIZE];
 	struct f2fs_dir_entry dentry[NR_INLINE_DENTRY];
 	__u8 filename[NR_INLINE_DENTRY][F2FS_SLOT_LEN];
-} __packed;
+} __attribute__((packed));
 
 /* file types used in inode_info->flags */
 enum FILE_TYPE {
@@ -978,10 +984,12 @@ extern u64 find_next_zero_bit_le(const u8 *, u64, u64);
 extern u_int32_t f2fs_cal_crc32(u_int32_t, void *, int);
 extern int f2fs_crc_valid(u_int32_t blk_crc, void *buf, int len);
 
-extern void f2fs_init_configuration(struct f2fs_configuration *);
-extern int f2fs_dev_is_umounted(struct f2fs_configuration *);
-extern int f2fs_get_device_info(struct f2fs_configuration *);
-extern void f2fs_finalize_device(struct f2fs_configuration *);
+extern void f2fs_init_configuration(void);
+extern int f2fs_devs_are_umounted(void);
+extern int f2fs_dev_is_umounted(char *);
+extern int f2fs_get_device_info(void);
+extern int get_device_info(int);
+extern void f2fs_finalize_device(void);
 
 extern int dev_read(void *, __u64, size_t);
 extern int dev_write(void *, __u64, size_t);
@@ -989,23 +997,88 @@ extern int dev_write_block(void *, __u64);
 extern int dev_write_dump(void *, __u64, size_t);
 /* All bytes in the buffer must be 0 use dev_fill(). */
 extern int dev_fill(void *, __u64, size_t);
+extern int dev_fill_block(void *, __u64);
 
 extern int dev_read_block(void *, __u64);
-extern int dev_read_blocks(void *, __u64, __u32 );
 extern int dev_reada_block(__u64);
 
 extern int dev_read_version(void *, __u64, size_t);
 extern void get_kernel_version(__u8 *);
 f2fs_hash_t f2fs_dentry_hash(const unsigned char *, int);
 
-extern int zbc_scsi_report_zones(struct f2fs_configuration *);
+#define F2FS_ZONED_NONE		0
+#define F2FS_ZONED_HA		1
+#define F2FS_ZONED_HM		2
 
-extern struct f2fs_configuration config;
+#ifdef HAVE_LINUX_BLKZONED_H
+
+#define blk_zone_type(z)        (z)->type
+#define blk_zone_conv(z)	((z)->type == BLK_ZONE_TYPE_CONVENTIONAL)
+#define blk_zone_seq_req(z)	((z)->type == BLK_ZONE_TYPE_SEQWRITE_REQ)
+#define blk_zone_seq_pref(z)	((z)->type == BLK_ZONE_TYPE_SEQWRITE_PREF)
+#define blk_zone_seq(z)		(blk_zone_seq_req(z) || blk_zone_seq_pref(z))
+
+static inline const char *
+blk_zone_type_str(struct blk_zone *blkz)
+{
+	switch (blk_zone_type(blkz)) {
+	case BLK_ZONE_TYPE_CONVENTIONAL:
+		return( "Conventional" );
+	case BLK_ZONE_TYPE_SEQWRITE_REQ:
+		return( "Sequential-write-required" );
+	case BLK_ZONE_TYPE_SEQWRITE_PREF:
+		return( "Sequential-write-preferred" );
+	}
+	return( "Unknown-type" );
+}
+
+#define blk_zone_cond(z)	(z)->cond
+
+static inline const char *
+blk_zone_cond_str(struct blk_zone *blkz)
+{
+	switch (blk_zone_cond(blkz)) {
+	case BLK_ZONE_COND_NOT_WP:
+		return "Not-write-pointer";
+	case BLK_ZONE_COND_EMPTY:
+		return "Empty";
+	case BLK_ZONE_COND_IMP_OPEN:
+		return "Implicit-open";
+	case BLK_ZONE_COND_EXP_OPEN:
+		return "Explicit-open";
+	case BLK_ZONE_COND_CLOSED:
+		return "Closed";
+	case BLK_ZONE_COND_READONLY:
+		return "Read-only";
+	case BLK_ZONE_COND_FULL:
+		return "Full";
+	case BLK_ZONE_COND_OFFLINE:
+		return "Offline";
+	}
+	return "Unknown-cond";
+}
+
+#define blk_zone_empty(z)	(blk_zone_cond(z) == BLK_ZONE_COND_EMPTY)
+
+#define blk_zone_sector(z)	(z)->start
+#define blk_zone_length(z)	(z)->len
+#define blk_zone_wp_sector(z)	(z)->wp
+#define blk_zone_need_reset(z)	(int)(z)->reset
+#define blk_zone_non_seq(z)	(int)(z)->non_seq
+
+#endif
+
+extern void f2fs_get_zoned_model(int);
+extern int f2fs_get_zone_blocks(int);
+extern int f2fs_check_zones(int);
+extern int f2fs_reset_zones(int);
+
+extern struct f2fs_configuration c;
 
 #define ALIGN(val, size)	((val) + (size) - 1) / (size)
-#define SEG_ALIGN(blks)		ALIGN(blks, config.blks_per_seg)
-#define ZONE_ALIGN(blks)	ALIGN(blks, config.blks_per_seg * \
-					config.segs_per_zone)
+#define SEG_ALIGN(blks)		ALIGN(blks, c.blks_per_seg)
+#define ZONE_ALIGN(blks)	ALIGN(blks, c.blks_per_seg * \
+					c.segs_per_zone)
 
 static inline double get_best_overprovision(struct f2fs_super_block *sb)
 {

@@ -23,7 +23,7 @@ const char *seg_type_name[SEG_TYPE_MAX + 1] = {
 	"SEG_TYPE_NONE",
 };
 
-void nat_dump(struct f2fs_sb_info *sbi, int start_nat, int end_nat)
+void nat_dump(struct f2fs_sb_info *sbi)
 {
 	struct f2fs_super_block *sb = F2FS_RAW_SUPER(sbi);
 	struct f2fs_nm_info *nm_i = NM_I(sbi);
@@ -34,7 +34,7 @@ void nat_dump(struct f2fs_sb_info *sbi, int start_nat, int end_nat)
 	pgoff_t block_addr;
 	char buf[BUF_SZ];
 	int seg_off;
-	int fd, ret, pack = 1;
+	int fd, ret, pack;
 	unsigned int i;
 
 	nat_block = (struct f2fs_nat_block *)calloc(BLOCK_SZ, 1);
@@ -47,7 +47,7 @@ void nat_dump(struct f2fs_sb_info *sbi, int start_nat, int end_nat)
 	fd = open("dump_nat", O_CREAT|O_WRONLY|O_TRUNC, 0666);
 	ASSERT(fd >= 0);
 
-	for (block_off = 0; block_off < nr_nat_blks; block_off++) {
+	for (block_off = 0; block_off < nr_nat_blks; pack = 1, block_off++) {
 
 		seg_off = block_off >> sbi->log_blocks_per_seg;
 		block_addr = (pgoff_t)(nm_i->nat_blkaddr +
@@ -77,14 +77,16 @@ void nat_dump(struct f2fs_sb_info *sbi, int start_nat, int end_nat)
 				ASSERT(ret >= 0);
 				if (ni.blk_addr != 0x0) {
 					memset(buf, 0, BUF_SZ);
-					snprintf(buf, BUF_SZ, "nid:%5u\tino:%5u\toffset:%5u"
-							"\tblkaddr:%10u\tpack:%d\n",ni.nid, ni.ino,
-							node_block->footer.flag >> OFFSET_BIT_SHIFT,
-									ni.blk_addr, pack);
+					snprintf(buf, BUF_SZ,
+						"nid:%5u\tino:%5u\toffset:%5u"
+						"\tblkaddr:%10u\tpack:%d\n",
+						ni.nid, ni.ino,
+						le32_to_cpu(node_block->footer.flag) >>
+							OFFSET_BIT_SHIFT,
+						ni.blk_addr, pack);
 					ret = write(fd, buf, strlen(buf));
 					ASSERT(ret >= 0);
 				}
-
 			} else {
 				node_info_from_raw_nat(&ni,
 						&nat_block->entries[i]);
@@ -94,10 +96,13 @@ void nat_dump(struct f2fs_sb_info *sbi, int start_nat, int end_nat)
 				ret = dev_read_block(node_block, ni.blk_addr);
 				ASSERT(ret >= 0);
 				memset(buf, 0, BUF_SZ);
-				snprintf(buf, BUF_SZ, "nid:%5u\tino:%5u\toffset:%5u"
-						"\tblkaddr:%10u\tpack:%d\n",ni.nid,
-						ni.ino,node_block->footer.flag >>
-						OFFSET_BIT_SHIFT,ni.blk_addr, pack);
+				snprintf(buf, BUF_SZ,
+					"nid:%5u\tino:%5u\toffset:%5u"
+					"\tblkaddr:%10u\tpack:%d\n",
+					ni.nid, ni.ino,
+					le32_to_cpu(node_block->footer.flag) >>
+						OFFSET_BIT_SHIFT,
+					ni.blk_addr, pack);
 				ret = write(fd, buf, strlen(buf));
 				ASSERT(ret >= 0);
 			}
@@ -110,7 +115,8 @@ void nat_dump(struct f2fs_sb_info *sbi, int start_nat, int end_nat)
 	close(fd);
 }
 
-void sit_dump(struct f2fs_sb_info *sbi, int start_sit, int end_sit)
+void sit_dump(struct f2fs_sb_info *sbi, unsigned int start_sit,
+					unsigned int end_sit)
 {
 	struct seg_entry *se;
 	struct sit_info *sit_i = SIT_I(sbi);
@@ -133,37 +139,44 @@ void sit_dump(struct f2fs_sb_info *sbi, int start_sit, int end_sit)
 	for (segno = start_sit; segno < end_sit; segno++) {
 		se = get_seg_entry(sbi, segno);
 		offset = SIT_BLOCK_OFFSET(sit_i, segno);
-		i = f2fs_test_bit(offset, sit_i->sit_bitmap)?2:1;
 		memset(buf, 0, BUF_SZ);
-		snprintf(buf, BUF_SZ, "\nsegno:%8u\tvblocks:%3u\tseg_type:%d\tsit_pack:%d\n\n",
-							segno, se->valid_blocks, se->type, i);
+		snprintf(buf, BUF_SZ,
+		"\nsegno:%8u\tvblocks:%3u\tseg_type:%d\tsit_pack:%d\n\n",
+			segno, se->valid_blocks, se->type,
+			f2fs_test_bit(offset, sit_i->sit_bitmap) ? 2 : 1);
 
 		ret = write(fd, buf, strlen(buf));
 		ASSERT(ret >= 0);
 
 		if (se->valid_blocks == 0x0) {
 			free_segs++;
-		} else {
-			ASSERT(se->valid_blocks <= 512);
-			valid_blocks += se->valid_blocks;
+			continue;
+		}
 
-			for (i = 0; i < 64; i++) {
-				memset(buf, 0, BUF_SZ);
-				snprintf(buf, BUF_SZ, "  %02x", *(se->cur_valid_map + i));
+		ASSERT(se->valid_blocks <= 512);
+		valid_blocks += se->valid_blocks;
+
+		for (i = 0; i < 64; i++) {
+			memset(buf, 0, BUF_SZ);
+			snprintf(buf, BUF_SZ, "  %02x",
+					*(se->cur_valid_map + i));
+			ret = write(fd, buf, strlen(buf));
+			ASSERT(ret >= 0);
+
+			if ((i + 1) % 16 == 0) {
+				snprintf(buf, BUF_SZ, "\n");
 				ret = write(fd, buf, strlen(buf));
 				ASSERT(ret >= 0);
-				if((i+1) % 16 == 0) {
-					snprintf(buf, BUF_SZ, "\n");
-					ret = write(fd, buf, strlen(buf));
-					ASSERT(ret >= 0);
-				}
 			}
 		}
 	}
 
 	memset(buf, 0, BUF_SZ);
-	snprintf(buf, BUF_SZ, "valid_blocks:[0x%" PRIx64 "]\tvalid_segs:%d\t free_segs:%d\n",
-			valid_blocks, SM_I(sbi)->main_segments - free_segs, free_segs);
+	snprintf(buf, BUF_SZ,
+		"valid_blocks:[0x%" PRIx64 "]\tvalid_segs:%d\t free_segs:%d\n",
+			valid_blocks,
+			SM_I(sbi)->main_segments - free_segs,
+			free_segs);
 	ret = write(fd, buf, strlen(buf));
 	ASSERT(ret >= 0);
 
@@ -226,7 +239,7 @@ void ssa_dump(struct f2fs_sb_info *sbi, int start_ssa, int end_ssa)
 	close(fd);
 }
 
-static void dump_data_blk(__u64 offset, u32 blkaddr)
+static void dump_data_blk(struct f2fs_sb_info *sbi, __u64 offset, u32 blkaddr)
 {
 	char buf[F2FS_BLKSIZE];
 
@@ -234,7 +247,7 @@ static void dump_data_blk(__u64 offset, u32 blkaddr)
 		return;
 
 	/* get data */
-	if (blkaddr == NEW_ADDR) {
+	if (blkaddr == NEW_ADDR || !IS_VALID_BLK_ADDR(sbi, blkaddr)) {
 		memset(buf, 0, F2FS_BLKSIZE);
 	} else {
 		int ret;
@@ -281,7 +294,7 @@ static void dump_node_blk(struct f2fs_sb_info *sbi, int ntype,
 	for (i = 0; i < idx; i++, (*ofs)++) {
 		switch (ntype) {
 		case TYPE_DIRECT_NODE:
-			dump_data_blk(*ofs * F2FS_BLKSIZE,
+			dump_data_blk(sbi, *ofs * F2FS_BLKSIZE,
 					le32_to_cpu(node_blk->dn.addr[i]));
 			break;
 		case TYPE_INDIRECT_NODE:
@@ -315,69 +328,74 @@ static void dump_inode_blk(struct f2fs_sb_info *sbi, u32 nid,
 
 	/* check data blocks in inode */
 	for (i = 0; i < ADDRS_PER_INODE(&node_blk->i); i++, ofs++)
-		dump_data_blk(ofs * F2FS_BLKSIZE,
+		dump_data_blk(sbi, ofs * F2FS_BLKSIZE,
 				le32_to_cpu(node_blk->i.i_addr[i]));
 
 	/* check node blocks in inode */
 	for (i = 0; i < 5; i++) {
 		if (i == 0 || i == 1)
 			dump_node_blk(sbi, TYPE_DIRECT_NODE,
-					node_blk->i.i_nid[i], &ofs);
+					le32_to_cpu(node_blk->i.i_nid[i]), &ofs);
 		else if (i == 2 || i == 3)
 			dump_node_blk(sbi, TYPE_INDIRECT_NODE,
-					node_blk->i.i_nid[i], &ofs);
+					le32_to_cpu(node_blk->i.i_nid[i]), &ofs);
 		else if (i == 4)
 			dump_node_blk(sbi, TYPE_DOUBLE_INDIRECT_NODE,
-					node_blk->i.i_nid[i], &ofs);
+					le32_to_cpu(node_blk->i.i_nid[i]), &ofs);
 		else
 			ASSERT(0);
 	}
 }
 
-void dump_file(struct f2fs_sb_info *sbi, struct node_info *ni,
-					struct f2fs_node *node_blk)
+static void dump_file(struct f2fs_sb_info *sbi, struct node_info *ni,
+				struct f2fs_node *node_blk, int force)
 {
 	struct f2fs_inode *inode = &node_blk->i;
 	u32 imode = le32_to_cpu(inode->i_mode);
-	char name[255] = {0};
+	u32 namelen = le32_to_cpu(inode->i_namelen);
+	unsigned char name[F2FS_NAME_LEN + 1] = {0};
 	char path[1024] = {0};
 	char ans[255] = {0};
+	int is_encrypt = file_is_encrypt(inode);
 	int ret;
 
-	if (!S_ISREG(imode)) {
-		MSG(0, "Not a regular file\n\n");
+	if (!S_ISREG(imode) || namelen == 0 || namelen > F2FS_NAME_LEN) {
+		MSG(force, "Not a regular file or wrong name info\n\n");
 		return;
 	}
+	if (force)
+		goto dump;
 
 	printf("Do you want to dump this file into ./lost_found/? [Y/N] ");
 	ret = scanf("%s", ans);
 	ASSERT(ret >= 0);
 
 	if (!strcasecmp(ans, "y")) {
+dump:
 		ret = system("mkdir -p ./lost_found");
 		ASSERT(ret >= 0);
 
 		/* make a file */
-		strncpy(name, (const char *)inode->i_name,
-					le32_to_cpu(inode->i_namelen));
-		name[le32_to_cpu(inode->i_namelen)] = 0;
+		namelen = convert_encrypted_name(inode->i_name, namelen,
+							name, is_encrypt);
+		name[namelen] = 0;
 		sprintf(path, "./lost_found/%s", name);
 
-		config.dump_fd = open(path, O_TRUNC|O_CREAT|O_RDWR, 0666);
-		ASSERT(config.dump_fd >= 0);
+		c.dump_fd = open(path, O_TRUNC|O_CREAT|O_RDWR, 0666);
+		ASSERT(c.dump_fd >= 0);
 
 		/* dump file's data */
 		dump_inode_blk(sbi, ni->ino, node_blk);
 
 		/* adjust file size */
-		ret = ftruncate(config.dump_fd, le32_to_cpu(inode->i_size));
+		ret = ftruncate(c.dump_fd, le32_to_cpu(inode->i_size));
 		ASSERT(ret >= 0);
 
-		close(config.dump_fd);
+		close(c.dump_fd);
 	}
 }
 
-void dump_node(struct f2fs_sb_info *sbi, nid_t nid)
+void dump_node(struct f2fs_sb_info *sbi, nid_t nid, int force)
 {
 	struct node_info ni;
 	struct f2fs_node *node_blk;
@@ -393,17 +411,19 @@ void dump_node(struct f2fs_sb_info *sbi, nid_t nid)
 	DBG(1, "nat_entry.ino         [0x%x]\n", ni.ino);
 
 	if (ni.blk_addr == 0x0)
-		MSG(0, "Invalid nat entry\n\n");
+		MSG(force, "Invalid nat entry\n\n");
 
 	DBG(1, "node_blk.footer.ino [0x%x]\n", le32_to_cpu(node_blk->footer.ino));
 	DBG(1, "node_blk.footer.nid [0x%x]\n", le32_to_cpu(node_blk->footer.nid));
 
 	if (le32_to_cpu(node_blk->footer.ino) == ni.ino &&
-			le32_to_cpu(node_blk->footer.nid) == ni.nid) {
-		print_node_info(node_blk);
-		dump_file(sbi, &ni, node_blk);
+			le32_to_cpu(node_blk->footer.nid) == ni.nid &&
+			ni.ino == ni.nid) {
+		print_node_info(node_blk, force);
+		dump_file(sbi, &ni, node_blk, force);
 	} else {
-		MSG(0, "Invalid node block\n\n");
+		print_node_info(node_blk, force);
+		MSG(force, "Invalid (i)node block\n\n");
 	}
 
 	free(node_blk);
@@ -420,8 +440,8 @@ static void dump_node_from_blkaddr(u32 blk_addr)
 	ret = dev_read_block(node_blk, blk_addr);
 	ASSERT(ret >= 0);
 
-	if (config.dbg_lv > 0)
-		print_node_info(node_blk);
+	if (c.dbg_lv > 0)
+		print_node_info(node_blk, 0);
 	else
 		print_inode_info(&node_blk->i, 1);
 
@@ -546,7 +566,7 @@ int dump_info_from_blkaddr(struct f2fs_sb_info *sbi, u32 blk_addr)
 	}
 
 	/* print inode */
-	if (config.dbg_lv > 0)
+	if (c.dbg_lv > 0)
 		dump_node_from_blkaddr(ino_ni.blk_addr);
 
 	if (type == SEG_TYPE_CUR_DATA || type == SEG_TYPE_DATA) {

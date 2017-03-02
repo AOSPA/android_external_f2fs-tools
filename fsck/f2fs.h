@@ -20,9 +20,7 @@
 #include <errno.h>
 #ifdef __linux__
 #include <mntent.h>
-#include <linux/types.h>
 #endif
-#include <sys/types.h>
 #include <sys/stat.h>
 #include <sys/ioctl.h>
 #include <sys/mount.h>
@@ -282,19 +280,10 @@ static inline bool is_set_ckpt_flags(struct f2fs_checkpoint *cp, unsigned int f)
 
 static inline block_t __start_cp_addr(struct f2fs_sb_info *sbi)
 {
-	block_t start_addr;
-	struct f2fs_checkpoint *ckpt = F2FS_CKPT(sbi);
-	unsigned long long ckpt_version = le64_to_cpu(ckpt->checkpoint_ver);
+	block_t start_addr = le32_to_cpu(F2FS_RAW_SUPER(sbi)->cp_blkaddr);
 
-	start_addr = le32_to_cpu(F2FS_RAW_SUPER(sbi)->cp_blkaddr);
-
-	/*
-	 * odd numbered checkpoint should at cp segment 0
-	 * and even segent must be at cp segment 1
-	 */
-	if (!(ckpt_version & 1))
+	if (sbi->cur_cp == 2)
 		start_addr += sbi->blocks_per_seg;
-
 	return start_addr;
 }
 
@@ -372,7 +361,7 @@ static inline block_t sum_blk_addr(struct f2fs_sb_info *sbi, int base, int type)
 static inline bool IS_VALID_NID(struct f2fs_sb_info *sbi, u32 nid)
 {
 	return (nid <= (NAT_ENTRY_PER_BLOCK *
-			F2FS_RAW_SUPER(sbi)->segment_count_nat
+			le32_to_cpu(F2FS_RAW_SUPER(sbi)->segment_count_nat)
 			<< (sbi->log_blocks_per_seg - 1)));
 }
 
@@ -380,7 +369,7 @@ static inline bool IS_VALID_BLK_ADDR(struct f2fs_sb_info *sbi, u32 addr)
 {
 	int i;
 
-	if (addr >= F2FS_RAW_SUPER(sbi)->block_count ||
+	if (addr >= le64_to_cpu(F2FS_RAW_SUPER(sbi)->block_count) ||
 				addr < SM_I(sbi)->main_blkaddr) {
 		DBG(1, "block addr [0x%x]\n", addr);
 		return 0;

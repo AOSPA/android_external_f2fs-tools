@@ -45,6 +45,12 @@ AC_CHECK_HEADERS_ONCE([
 	sys/mount.h
 ])
 
+# Test configure options.
+AC_ARG_WITH([selinux],
+	AS_HELP_STRING([--without-selinux],
+	  [Ignore presence of libselinux and disable selinux support])
+)
+
 # Checks for programs.
 AC_PROG_CC
 AC_PROG_LIBTOOL
@@ -54,10 +60,22 @@ AC_PATH_PROG([LDCONFIG], [ldconfig],
 
 # Checks for libraries.
 PKG_CHECK_MODULES([libuuid], [uuid])
-PKG_CHECK_MODULES([libselinux], [libselinux])
+
+AS_IF([test "x$with_selinux" != "xno"],
+	[PKG_CHECK_MODULES([libselinux], [libselinux],
+	                   [have_selinux=yes], [have_selinux=no])],
+	[have_selinux=no]
+)
+
+AS_IF([test "x$have_selinux" = "xyes"],
+	[AC_DEFINE([HAVE_LIBSELINUX], [1], [Use libselinux])],
+	[AS_IF([test "x$with_selinux" = "xyes"],
+		[AC_MSG_ERROR([selinux support requested but libselinux not found])]
+	)]
+)
 
 # Checks for header files.
-AC_CHECK_HEADERS([linux/fs.h fcntl.h mntent.h stdlib.h string.h \
+AC_CHECK_HEADERS([linux/fs.h linux/blkzoned.h fcntl.h mntent.h stdlib.h string.h \
 		sys/ioctl.h sys/mount.h unistd.h linux/falloc.h byteswap.h])
 
 # Checks for typedefs, structures, and compiler characteristics.
@@ -92,12 +110,12 @@ AC_CONFIG_FILES([
 ])
 
 # export library version info for mkfs/libf2fs_format_la
-AC_SUBST(FMT_CURRENT, 0)
-AC_SUBST(FMT_REVISION, 2)
+AC_SUBST(FMT_CURRENT, 1)
+AC_SUBST(FMT_REVISION, 0)
 AC_SUBST(FMT_AGE, 0)
 
 # export library version info for lib/libf2fs_la
-AC_SUBST(LIBF2FS_CURRENT, 1)
+AC_SUBST(LIBF2FS_CURRENT, 2)
 AC_SUBST(LIBF2FS_REVISION, 0)
 AC_SUBST(LIBF2FS_AGE, 0)
 
