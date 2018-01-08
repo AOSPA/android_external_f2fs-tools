@@ -14,7 +14,9 @@
 #include <string.h>
 #include <unistd.h>
 #include <sys/stat.h>
+#ifndef ANDROID_WINDOWS_HOST
 #include <sys/mount.h>
+#endif
 #include <time.h>
 #include <uuid/uuid.h>
 #include <errno.h>
@@ -86,6 +88,10 @@ static void parse_feature(const char *features)
 		c.feature |= cpu_to_le32(F2FS_FEATURE_PRJQUOTA);
 	} else if (!strcmp(features, "inode_checksum")) {
 		c.feature |= cpu_to_le32(F2FS_FEATURE_INODE_CHKSUM);
+	} else if (!strcmp(features, "flexible_inline_xattr")) {
+		c.feature |= cpu_to_le32(F2FS_FEATURE_FLEXIBLE_INLINE_XATTR);
+	} else if (!strcmp(features, "quota")) {
+		c.feature |= cpu_to_le32(F2FS_FEATURE_QUOTA_INO);
 	} else {
 		MSG(0, "Error: Wrong features\n");
 		mkfs_usage();
@@ -173,6 +179,11 @@ static void f2fs_parse_options(int argc, char *argv[])
 		}
 		if (c.feature & cpu_to_le32(F2FS_FEATURE_INODE_CHKSUM)) {
 			MSG(0, "\tInfo: inode checksum feature should always been"
+				"enabled with extra attr feature\n");
+			exit(1);
+		}
+		if (c.feature & cpu_to_le32(F2FS_FEATURE_FLEXIBLE_INLINE_XATTR)) {
+			MSG(0, "\tInfo: flexible inline xattr feature should always been"
 				"enabled with extra attr feature\n");
 			exit(1);
 		}
@@ -282,6 +293,8 @@ int main(int argc, char *argv[])
 
 	f2fs_show_info();
 
+	c.func = MKFS;
+
 	if (!force_overwrite && f2fs_check_overwrite()) {
 		MSG(0, "\tUse the -f option to force overwrite.\n");
 		return -1;
@@ -311,20 +324,15 @@ int main(int argc, char *argv[])
 	}
 
 	if (c.sparse_mode) {
-#ifndef WITH_ANDROID
-		MSG(0, "\tError: Sparse mode is only supported for android\n");
-		return -1;
-#else
-		if (f2fs_sparse_file)
-			sparse_file_destroy(f2fs_sparse_file);
-		f2fs_sparse_file = sparse_file_new(F2FS_BLKSIZE, c.device_size);
-#endif
+		if (f2fs_init_sparse_file())
+			return -1;
 	}
 
 	if (f2fs_format_device() < 0)
 		return -1;
 
-	f2fs_finalize_device();
+	if (f2fs_finalize_device() < 0)
+		return -1;
 
 	MSG(0, "Info: format successful\n");
 

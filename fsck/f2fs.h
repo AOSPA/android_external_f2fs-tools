@@ -11,6 +11,7 @@
 #ifndef _F2FS_H_
 #define _F2FS_H_
 
+#include <f2fs_fs.h>
 #include <stdlib.h>
 #include <unistd.h>
 #include <stdio.h>
@@ -18,13 +19,13 @@
 #include <fcntl.h>
 #include <string.h>
 #include <errno.h>
+#ifdef HAVE_MNTENT_H
 #include <mntent.h>
+#endif
 #include <sys/stat.h>
 #include <sys/ioctl.h>
 #include <sys/mount.h>
 #include <assert.h>
-
-#include <f2fs_fs.h>
 
 #define EXIT_ERR_CODE		(-1)
 #define ver_after(a, b) (typecheck(unsigned long long, a) &&            \
@@ -454,14 +455,13 @@ static inline int map_de_type(umode_t mode)
 
 static inline void *inline_xattr_addr(struct f2fs_inode *inode)
 {
-	return (void *)&(inode->i_addr[DEF_ADDRS_PER_INODE_INLINE_XATTR]);
+	return (void *)&(inode->i_addr[DEF_ADDRS_PER_INODE -
+				get_inline_xattr_addrs(inode)]);
 }
 
 static inline int inline_xattr_size(struct f2fs_inode *inode)
 {
-	if (inode->i_inline & F2FS_INLINE_XATTR)
-		return F2FS_INLINE_XATTR_ADDRS << 2;
-	return 0;
+	return get_inline_xattr_addrs(inode) * sizeof(__le32);
 }
 
 extern int lookup_nat_in_journal(struct f2fs_sb_info *sbi, u32 nid, struct f2fs_nat_entry *ne);
