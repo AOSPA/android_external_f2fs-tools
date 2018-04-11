@@ -54,6 +54,7 @@ static void mkfs_usage()
 	MSG(0, "  -s # of segments per section [default:1]\n");
 	MSG(0, "  -S sparse mode\n");
 	MSG(0, "  -t 0: nodiscard, 1: discard [default:1]\n");
+	MSG(0, "  -w wanted sector size\n");
 	MSG(0, "  -z # of sections per zone [default:1]\n");
 	MSG(0, "sectors: number of sectors. [default: determined by device size]\n");
 	exit(1);
@@ -82,6 +83,8 @@ static void parse_feature(const char *features)
 		features++;
 	if (!strcmp(features, "encrypt")) {
 		c.feature |= cpu_to_le32(F2FS_FEATURE_ENCRYPT);
+	} else if (!strcmp(features, "verity")) {
+		c.feature |= cpu_to_le32(F2FS_FEATURE_VERITY);
 	} else if (!strcmp(features, "extra_attr")) {
 		c.feature |= cpu_to_le32(F2FS_FEATURE_EXTRA_ATTR);
 	} else if (!strcmp(features, "project_quota")) {
@@ -102,7 +105,7 @@ static void parse_feature(const char *features)
 
 static void f2fs_parse_options(int argc, char *argv[])
 {
-	static const char *option_string = "qa:c:d:e:l:mo:O:s:S:z:t:f";
+	static const char *option_string = "qa:c:d:e:l:mo:O:s:S:z:t:fw:";
 	int32_t option=0;
 
 	while ((option = getopt(argc,argv,option_string)) != EOF) {
@@ -165,6 +168,9 @@ static void f2fs_parse_options(int argc, char *argv[])
 			break;
 		case 'f':
 			force_overwrite = 1;
+			break;
+		case 'w':
+			c.wanted_sector_size = atoi(optarg);
 			break;
 		default:
 			MSG(0, "\tError: Unknown option %c\n",option);
