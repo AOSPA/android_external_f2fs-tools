@@ -52,7 +52,7 @@ int reserve_new_block(struct f2fs_sb_info *sbi, block_t *to,
 
 	blkaddr = SM_I(sbi)->main_blkaddr;
 
-	if (find_next_free_block(sbi, &blkaddr, 0, type)) {
+	if (find_next_free_block(sbi, &blkaddr, 0, type, false)) {
 		ERR_MSG("Can't find free block");
 		ASSERT(0);
 	}
@@ -62,7 +62,7 @@ int reserve_new_block(struct f2fs_sb_info *sbi, block_t *to,
 	se->type = type;
 	se->valid_blocks++;
 	f2fs_set_bit(offset, (char *)se->cur_valid_map);
-	if (!is_set_ckpt_flags(F2FS_CKPT(sbi), CP_UMOUNT_FLAG)) {
+	if (need_fsync_data_record(sbi)) {
 		se->ckpt_type = type;
 		se->ckpt_valid_blocks++;
 		f2fs_set_bit(offset, (char *)se->ckpt_valid_map);
@@ -170,7 +170,8 @@ u64 f2fs_read(struct f2fs_sb_info *sbi, nid_t ino, u8 *buffer,
 				free(index_node);
 			index_node = (dn.node_blk == dn.inode_blk) ?
 							NULL : dn.node_blk;
-			remained_blkentries = ADDRS_PER_PAGE(dn.node_blk);
+			remained_blkentries = ADDRS_PER_PAGE(sbi,
+						dn.node_blk, dn.inode_blk);
 		}
 		ASSERT(remained_blkentries > 0);
 
@@ -248,7 +249,8 @@ u64 f2fs_write(struct f2fs_sb_info *sbi, nid_t ino, u8 *buffer,
 				free(index_node);
 			index_node = (dn.node_blk == dn.inode_blk) ?
 							NULL : dn.node_blk;
-			remained_blkentries = ADDRS_PER_PAGE(dn.node_blk);
+			remained_blkentries = ADDRS_PER_PAGE(sbi,
+						dn.node_blk, dn.inode_blk);
 		}
 		ASSERT(remained_blkentries > 0);
 
