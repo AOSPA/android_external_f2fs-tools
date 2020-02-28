@@ -678,11 +678,9 @@ void f2fs_init_configuration(void)
 	c.blks_per_seg = DEFAULT_BLOCKS_PER_SEGMENT;
 	c.wanted_total_sectors = -1;
 	c.wanted_sector_size = -1;
+	c.no_kernel_check = 1;
 #ifndef WITH_ANDROID
 	c.preserve_limits = 1;
-	c.no_kernel_check = 1;
-#else
-	c.no_kernel_check = 0;
 #endif
 
 	for (i = 0; i < MAX_DEVICES; i++) {
