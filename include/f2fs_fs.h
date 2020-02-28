@@ -356,6 +356,8 @@ struct f2fs_configuration {
 	__u8 sb_version[VERSION_LEN + 1];
 	__u8 version[VERSION_LEN + 1];
 	char *vol_label;
+	u_int16_t s_encoding;
+	u_int16_t s_encoding_flags;
 	int heap;
 	int32_t kd;
 	int32_t dump_fd;
@@ -382,6 +384,7 @@ struct f2fs_configuration {
 	int ro;
 	int preserve_limits;		/* preserve quota limits */
 	int large_nat_bitmap;
+	int fix_chksum;			/* fix old cp.chksum position */
 	__le32 feature;			/* defined features */
 
 	/* mkfs parameters */
@@ -547,6 +550,7 @@ enum {
 #define F2FS_MAX_LOG_SECTOR_SIZE	12	/* 12 bits for 4096 bytes */
 #define F2FS_BLKSIZE			4096	/* support only 4KB block */
 #define F2FS_MAX_EXTENSION		64	/* # of extension entries */
+#define F2FS_EXTENSION_LEN		8	/* max size of extension */
 #define F2FS_BLK_ALIGN(x)	(((x) + F2FS_BLKSIZE - 1) / F2FS_BLKSIZE)
 
 #define NULL_ADDR		0x0U
@@ -561,6 +565,9 @@ enum {
 #define QUOTA_INO(sb,t)	(le32_to_cpu((sb)->qf_ino[t]))
 
 #define FS_IMMUTABLE_FL		0x00000010 /* Immutable file */
+
+#define F2FS_ENC_UTF8_12_1	1
+#define F2FS_ENC_STRICT_MODE_FL	(1 << 0)
 
 /* This flag is used by node and meta inodes, and by recovery */
 #define GFP_F2FS_ZERO	(GFP_NOFS | __GFP_ZERO)
@@ -587,6 +594,7 @@ enum {
 #define F2FS_FEATURE_LOST_FOUND		0x0200
 #define F2FS_FEATURE_VERITY		0x0400	/* reserved */
 #define F2FS_FEATURE_SB_CHKSUM		0x0800
+#define F2FS_FEATURE_CASEFOLD		0x1000
 
 #define MAX_VOLUME_NAME		512
 
@@ -640,7 +648,9 @@ struct f2fs_super_block {
 	struct f2fs_device devs[MAX_DEVICES];	/* device list */
 	__le32 qf_ino[F2FS_MAX_QUOTAS];	/* quota inode numbers */
 	__u8 hot_ext_count;		/* # of hot file extension */
-	__u8 reserved[310];		/* valid reserved region */
+	__le16  s_encoding;		/* Filename charset encoding */
+	__le16  s_encoding_flags;	/* Filename charset encoding flags */
+	__u8 reserved[306];		/* valid reserved region */
 	__le32 crc;			/* checksum of superblock */
 } __attribute__((packed));
 
@@ -660,6 +670,8 @@ struct f2fs_super_block {
 #define CP_COMPACT_SUM_FLAG	0x00000004
 #define CP_ORPHAN_PRESENT_FLAG	0x00000002
 #define CP_UMOUNT_FLAG		0x00000001
+
+#define F2FS_CP_PACKS		2	/* # of checkpoint packs */
 
 struct f2fs_checkpoint {
 	__le64 checkpoint_ver;		/* checkpoint block version number */
@@ -692,10 +704,15 @@ struct f2fs_checkpoint {
 	unsigned char sit_nat_version_bitmap[1];
 } __attribute__((packed));
 
+#define CP_BITMAP_OFFSET	\
+	(offsetof(struct f2fs_checkpoint, sit_nat_version_bitmap))
+#define CP_MIN_CHKSUM_OFFSET	CP_BITMAP_OFFSET
+
+#define MIN_NAT_BITMAP_SIZE	64
 #define MAX_SIT_BITMAP_SIZE_IN_CKPT    \
-	(CP_CHKSUM_OFFSET - sizeof(struct f2fs_checkpoint) + 1 - 64)
+	(CP_CHKSUM_OFFSET - CP_BITMAP_OFFSET - MIN_NAT_BITMAP_SIZE)
 #define MAX_BITMAP_SIZE_IN_CKPT	\
-	(CP_CHKSUM_OFFSET - sizeof(struct f2fs_checkpoint) + 1)
+	(CP_CHKSUM_OFFSET - CP_BITMAP_OFFSET)
 
 /*
  * For orphan inode management
@@ -721,6 +738,10 @@ struct f2fs_extent {
 } __attribute__((packed));
 
 #define F2FS_NAME_LEN		255
+
+/* max output length of pretty_print_filename() including null terminator */
+#define F2FS_PRINT_NAMELEN	(4 * ((F2FS_NAME_LEN + 2) / 3) + 1)
+
 /* 200 bytes for inline xattrs by default */
 #define DEFAULT_INLINE_XATTR_ADDRS	50
 #define DEF_ADDRS_PER_INODE	923	/* Address Pointers in an Inode */
@@ -747,9 +768,10 @@ struct f2fs_extent {
 #define offsetof(TYPE, MEMBER) ((size_t) &((TYPE *)0)->MEMBER)
 #endif
 
+#define F2FS_EXTRA_ISIZE_OFFSET				\
+	offsetof(struct f2fs_inode, i_extra_isize)
 #define F2FS_TOTAL_EXTRA_ATTR_SIZE			\
-	(offsetof(struct f2fs_inode, i_extra_end) -	\
-	offsetof(struct f2fs_inode, i_extra_isize))	\
+	(offsetof(struct f2fs_inode, i_extra_end) - F2FS_EXTRA_ISIZE_OFFSET)
 
 #define	F2FS_DEF_PROJID		0	/* default project ID */
 
@@ -782,6 +804,9 @@ struct f2fs_extent {
 
 #define file_is_encrypt(fi)      ((fi)->i_advise & FADVISE_ENCRYPT_BIT)
 #define file_enc_name(fi)        ((fi)->i_advise & FADVISE_ENC_NAME_BIT)
+
+#define F2FS_CASEFOLD_FL	0x40000000 /* Casefolded file */
+#define IS_CASEFOLDED(dir)     ((dir)->i_flags & F2FS_CASEFOLD_FL)
 
 struct f2fs_inode {
 	__le16 i_mode;			/* file mode */
@@ -1133,6 +1158,8 @@ extern int utf16_to_utf8(char *, const u_int16_t *, size_t, size_t);
 extern int log_base_2(u_int32_t);
 extern unsigned int addrs_per_inode(struct f2fs_inode *);
 extern __u32 f2fs_inode_chksum(struct f2fs_node *);
+extern __u32 f2fs_checkpoint_chksum(struct f2fs_checkpoint *);
+extern int write_inode(struct f2fs_node *, u64);
 
 extern int get_bits_in_byte(unsigned char n);
 extern int test_and_set_bit_le(u32, u8 *);
@@ -1149,14 +1176,21 @@ extern int f2fs_crc_valid(u_int32_t blk_crc, void *buf, int len);
 
 extern void f2fs_init_configuration(void);
 extern int f2fs_devs_are_umounted(void);
+extern int f2fs_dev_is_writable(void);
 extern int f2fs_dev_is_umounted(char *);
 extern int f2fs_get_device_info(void);
+extern unsigned int calc_extra_isize(void);
 extern int get_device_info(int);
 extern int f2fs_init_sparse_file(void);
 extern int f2fs_finalize_device(void);
 extern int f2fs_fsync_device(void);
 
 extern int dev_read(void *, __u64, size_t);
+#ifdef POSIX_FADV_WILLNEED
+extern int dev_readahead(__u64, size_t);
+#else
+extern int dev_readahead(__u64, size_t UNUSED(len));
+#endif
 extern int dev_write(void *, __u64, size_t);
 extern int dev_write_block(void *, __u64);
 extern int dev_write_dump(void *, __u64, size_t);
@@ -1170,7 +1204,7 @@ extern int dev_reada_block(__u64);
 extern int dev_read_version(void *, __u64, size_t);
 extern void get_kernel_version(__u8 *);
 extern void get_kernel_uname_version(__u8 *);
-f2fs_hash_t f2fs_dentry_hash(const unsigned char *, int);
+f2fs_hash_t f2fs_dentry_hash(int, int, const unsigned char *, int);
 
 static inline bool f2fs_has_extra_isize(struct f2fs_inode *inode)
 {
@@ -1260,7 +1294,7 @@ blk_zone_cond_str(struct blk_zone *blkz)
 
 #endif
 
-extern void f2fs_get_zoned_model(int);
+extern int f2fs_get_zoned_model(int);
 extern int f2fs_get_zone_blocks(int);
 extern int f2fs_check_zones(int);
 extern int f2fs_reset_zones(int);
@@ -1355,6 +1389,7 @@ struct feature feature_table[] = {					\
 	{ "lost_found",			F2FS_FEATURE_LOST_FOUND },	\
 	{ "verity",			F2FS_FEATURE_VERITY },	/* reserved */ \
 	{ "sb_checksum",		F2FS_FEATURE_SB_CHKSUM },	\
+	{ "casefold",			F2FS_FEATURE_CASEFOLD },	\
 	{ NULL,				0x0},				\
 };
 
@@ -1427,5 +1462,26 @@ static inline int parse_root_owner(char *ids,
 	*root_gid = atoi(gid);
 	return 0;
 }
+
+/*
+ * NLS definitions
+ */
+struct f2fs_nls_table {
+	int version;
+	const struct f2fs_nls_ops *ops;
+};
+
+struct f2fs_nls_ops {
+	int (*casefold)(const struct f2fs_nls_table *charset,
+			const unsigned char *str, size_t len,
+			unsigned char *dest, size_t dlen);
+};
+
+extern const struct f2fs_nls_table *f2fs_load_nls_table(int encoding);
+#define F2FS_ENC_UTF8_12_0	1
+
+extern int f2fs_str2encoding(const char *string);
+extern int f2fs_get_encoding_flags(int encoding);
+extern int f2fs_str2encoding_flags(char **param, __u16 *flags);
 
 #endif	/*__F2FS_FS_H */
