@@ -68,6 +68,12 @@ typedef u32	__be32;
 #define F2FS_IOC_SET_PIN_FILE		_IOW(F2FS_IOCTL_MAGIC, 13, __u32)
 #define F2FS_IOC_GET_PIN_FILE		_IOR(F2FS_IOCTL_MAGIC, 14, __u32)
 #define F2FS_IOC_PRECACHE_EXTENTS	_IO(F2FS_IOCTL_MAGIC, 15)
+#define F2FS_IOC_RESIZE_FS		_IOW(F2FS_IOCTL_MAGIC, 16, __u64)
+#define F2FS_IOC_GET_COMPRESS_BLOCKS	_IOR(F2FS_IOCTL_MAGIC, 17, __u64)
+#define F2FS_IOC_RELEASE_COMPRESS_BLOCKS				\
+					_IOR(F2FS_IOCTL_MAGIC, 18, __u64)
+#define F2FS_IOC_RESERVE_COMPRESS_BLOCKS				\
+					_IOR(F2FS_IOCTL_MAGIC, 19, __u64)
 
 #define F2FS_IOC_SET_ENCRYPTION_POLICY	FS_IOC_SET_ENCRYPTION_POLICY
 #define F2FS_IOC_GET_ENCRYPTION_POLICY	FS_IOC_GET_ENCRYPTION_POLICY
@@ -104,6 +110,18 @@ typedef u32	__be32;
 #define F2FS_IOC_FSGETXATTR		FS_IOC_FSGETXATTR
 #define F2FS_IOC_FSSETXATTR		FS_IOC_FSSETXATTR
 
+#ifndef FS_ENCRYPT_FL
+#define FS_ENCRYPT_FL			0x00000800 /* Encrypted file */
+#endif
+#ifndef FS_VERITY_FL
+#define FS_VERITY_FL			0x00100000 /* Verity protected inode */
+#endif
+#ifndef FS_INLINE_DATA_FL
+#define FS_INLINE_DATA_FL		0x10000000 /* Inline data for regular/symlink files */
+#endif
+#ifndef FS_NOCOW_FL
+#define FS_NOCOW_FL			0x00800000 /* Do not cow file */
+#endif
 #ifndef FS_NOCOMP_FL
 #define FS_NOCOMP_FL			0x00000400 /* Don't compress */
 #endif

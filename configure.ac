@@ -93,6 +93,7 @@ AC_CHECK_HEADERS(m4_flatten([
 	linux/posix_acl.h
 	linux/types.h
 	linux/xattr.h
+	mach/mach_time.h
 	mntent.h
 	scsi/sg.h
 	stdlib.h
@@ -211,6 +212,10 @@ AC_CONFIG_FILES([
 	tools/sg_write_buffer/Makefile
 	tools/f2fs_io/Makefile
 ])
+
+AC_CHECK_MEMBER([struct blk_zone.capacity],
+		[AC_DEFINE(HAVE_BLK_ZONE_REP_V2, [1], [report zones includes zone capacity])],
+		[], [[#include <linux/blkzoned.h>]])
 
 # export library version info for mkfs/libf2fs_format_la
 AC_SUBST(FMT_CURRENT, 6)

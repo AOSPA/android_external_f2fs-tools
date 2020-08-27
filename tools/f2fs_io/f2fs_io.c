@@ -130,6 +130,49 @@ static void full_write(int fd, const void *buf, size_t count)
 	}
 }
 
+#if defined(__APPLE__)
+static u64 get_current_us()
+{
+#ifdef HAVE_MACH_TIME_H
+	return mach_absolute_time() / 1000;
+#else
+	return 0;
+#endif
+}
+#else
+static u64 get_current_us()
+{
+	struct timespec t;
+	t.tv_sec = t.tv_nsec = 0;
+	clock_gettime(CLOCK_BOOTTIME, &t);
+	return (u64)t.tv_sec * 1000000LL + t.tv_nsec / 1000;
+}
+#endif
+
+#define fsync_desc "fsync"
+#define fsync_help						\
+"f2fs_io fsync [file]\n\n"					\
+"fsync given the file\n"					\
+
+static void do_fsync(int argc, char **argv, const struct cmd_desc *cmd)
+{
+	int fd;
+
+	if (argc != 2) {
+		fputs("Excess arguments\n\n", stderr);
+		fputs(cmd->cmd_help, stderr);
+		exit(1);
+	}
+
+	fd = xopen(argv[1], O_WRONLY, 0);
+
+	if (fsync(fd) != 0)
+		die_errno("fsync failed");
+
+	printf("fsync a file\n");
+	exit(0);
+}
+
 #define set_verity_desc "Set fs-verity"
 #define set_verity_help					\
 "f2fs_io set_verity [file]\n\n"				\
@@ -162,13 +205,17 @@ static void do_set_verity(int argc, char **argv, const struct cmd_desc *cmd)
 "f2fs_io getflags [file]\n\n"					\
 "get a flag given the file\n"					\
 "flag can show \n"						\
+"  encryption\n"						\
+"  nocow(pinned)\n"						\
+"  inline_data\n"						\
+"  verity\n"							\
 "  casefold\n"							\
 "  compression\n"						\
 "  nocompression\n"
 
 static void do_getflags(int argc, char **argv, const struct cmd_desc *cmd)
 {
-	long flag;
+	long flag = 0;
 	int ret, fd;
 	int exist = 0;
 
@@ -198,6 +245,30 @@ static void do_getflags(int argc, char **argv, const struct cmd_desc *cmd)
 		printf("nocompression");
 		exist = 1;
 	}
+	if (flag & FS_ENCRYPT_FL) {
+		if (exist)
+			printf(",");
+		printf("encrypt");
+		exist = 1;
+	}
+	if (flag & FS_VERITY_FL) {
+		if (exist)
+			printf(",");
+		printf("verity");
+		exist = 1;
+	}
+	if (flag & FS_INLINE_DATA_FL) {
+		if (exist)
+			printf(",");
+		printf("inline_data");
+		exist = 1;
+	}
+	if (flag & FS_NOCOW_FL) {
+		if (exist)
+			printf(",");
+		printf("nocow(pinned)");
+		exist = 1;
+	}
 	if (!exist)
 		printf("none");
 	printf("\n");
@@ -215,7 +286,7 @@ static void do_getflags(int argc, char **argv, const struct cmd_desc *cmd)
 
 static void do_setflags(int argc, char **argv, const struct cmd_desc *cmd)
 {
-	long flag;
+	long flag = 0;
 	int ret, fd;
 
 	if (argc != 3) {
@@ -297,7 +368,7 @@ static void do_pinfile(int argc, char **argv, const struct cmd_desc *cmd)
 		exit(1);
 	}
 
-	fd = xopen(argv[2], O_RDWR, 0);
+	fd = xopen(argv[2], O_RDONLY, 0);
 
 	ret = -1;
 	if (!strcmp(argv[1], "set")) {
@@ -372,6 +443,7 @@ static void do_fallocate(int argc, char **argv, const struct cmd_desc *cmd)
 "IO can be\n"						\
 "  buffered : buffered IO\n"				\
 "  dio      : direct IO\n"				\
+"  osync    : O_SYNC\n"					\
 
 static void do_write(int argc, char **argv, const struct cmd_desc *cmd)
 {
@@ -381,6 +453,7 @@ static void do_write(int argc, char **argv, const struct cmd_desc *cmd)
 	unsigned bs, count, i;
 	int flags = 0;
 	int fd;
+	u64 total_time = 0, max_time = 0, max_time_t = 0;
 
 	srand(time(0));
 
@@ -408,11 +481,14 @@ static void do_write(int argc, char **argv, const struct cmd_desc *cmd)
 
 	if (!strcmp(argv[5], "dio"))
 		flags |= O_DIRECT;
+	else if (!strcmp(argv[5], "osync"))
+		flags |= O_SYNC;
 	else if (strcmp(argv[5], "buffered"))
 		die("Wrong IO type");
 
 	fd = xopen(argv[6], O_CREAT | O_WRONLY | flags, 0755);
 
+	total_time = get_current_us();
 	for (i = 0; i < count; i++) {
 		if (!strcmp(argv[4], "inc_num"))
 			*(int *)buf = inc_num++;
@@ -420,13 +496,20 @@ static void do_write(int argc, char **argv, const struct cmd_desc *cmd)
 			*(int *)buf = rand();
 
 		/* write data */
+		max_time_t = get_current_us();
 		ret = pwrite(fd, buf, buf_size, offset + buf_size * i);
+		max_time_t = get_current_us() - max_time_t;
+		if (max_time < max_time_t)
+			max_time = max_time_t;
 		if (ret != buf_size)
 			break;
 		written += ret;
 	}
 
-	printf("Written %"PRIu64" bytes with pattern=%s\n", written, argv[4]);
+	printf("Written %"PRIu64" bytes with pattern=%s, total_time=%"PRIu64" us, max_latency=%"PRIu64" us\n",
+				written, argv[4],
+				get_current_us() - total_time,
+				max_time);
 	exit(0);
 }
 
@@ -437,15 +520,18 @@ static void do_write(int argc, char **argv, const struct cmd_desc *cmd)
 "IO can be\n"						\
 "  buffered : buffered IO\n"				\
 "  dio      : direct IO\n"				\
+"  mmap     : mmap IO\n"				\
 
 static void do_read(int argc, char **argv, const struct cmd_desc *cmd)
 {
 	u64 buf_size = 0, ret = 0, read_cnt = 0;
 	u64 offset;
 	char *buf = NULL;
+	char *data;
 	char *print_buf = NULL;
 	unsigned bs, count, i, print_bytes;
 	int flags = 0;
+	int do_mmap = 0;
 	int fd;
 
 	if (argc != 7) {
@@ -466,6 +552,8 @@ static void do_read(int argc, char **argv, const struct cmd_desc *cmd)
 	count = atoi(argv[3]);
 	if (!strcmp(argv[4], "dio"))
 		flags |= O_DIRECT;
+	else if (!strcmp(argv[4], "mmap"))
+		do_mmap = 1;
 	else if (strcmp(argv[4], "buffered"))
 		die("Wrong IO type");
 
@@ -477,8 +565,20 @@ static void do_read(int argc, char **argv, const struct cmd_desc *cmd)
 
 	fd = xopen(argv[6], O_RDONLY | flags, 0);
 
+	if (do_mmap) {
+		data = mmap(NULL, count * buf_size, PROT_READ,
+						MAP_SHARED, fd, offset);
+		if (data == MAP_FAILED)
+			die("Mmap failed");
+	}
+
 	for (i = 0; i < count; i++) {
-		ret = pread(fd, buf, buf_size, offset + buf_size * i);
+		if (do_mmap) {
+			memcpy(buf, data + offset + buf_size * i, buf_size);
+			ret = buf_size;
+		} else {
+			ret = pread(fd, buf, buf_size, offset + buf_size * i);
+		}
 		if (ret != buf_size)
 			break;
 
@@ -496,6 +596,69 @@ static void do_read(int argc, char **argv, const struct cmd_desc *cmd)
 			printf(" ");
 	}
 	printf("\n");
+	exit(0);
+}
+
+#define randread_desc "random read data from file"
+#define randread_help					\
+"f2fs_io randread [chunk_size in 4kb] [count] [IO] [file_path]\n\n"	\
+"Do random read data in file_path\n"		\
+"IO can be\n"						\
+"  buffered : buffered IO\n"				\
+"  dio      : direct IO\n"				\
+
+static void do_randread(int argc, char **argv, const struct cmd_desc *cmd)
+{
+	u64 buf_size = 0, ret = 0, read_cnt = 0;
+	u64 idx, end_idx, aligned_size;
+	char *buf = NULL;
+	unsigned bs, count, i;
+	int flags = 0;
+	int fd;
+	time_t t;
+	struct stat stbuf;
+
+	if (argc != 5) {
+		fputs("Excess arguments\n\n", stderr);
+		fputs(cmd->cmd_help, stderr);
+		exit(1);
+	}
+
+	bs = atoi(argv[1]);
+	if (bs > 1024)
+		die("Too big chunk size - limit: 4MB");
+	buf_size = bs * 4096;
+
+	buf = aligned_xalloc(4096, buf_size);
+
+	count = atoi(argv[2]);
+	if (!strcmp(argv[3], "dio"))
+		flags |= O_DIRECT;
+	else if (strcmp(argv[3], "buffered"))
+		die("Wrong IO type");
+
+	fd = xopen(argv[4], O_RDONLY | flags, 0);
+
+	if (fstat(fd, &stbuf) != 0)
+		die_errno("fstat of source file failed");
+
+	aligned_size = (u64)stbuf.st_size & ~((u64)(4096 - 1));
+	if (aligned_size < buf_size)
+		die("File is too small to random read");
+	end_idx = (u64)(aligned_size - buf_size) / (u64)4096 + 1;
+
+	srand((unsigned) time(&t));
+
+	for (i = 0; i < count; i++) {
+		idx = rand() % end_idx;
+
+		ret = pread(fd, buf, buf_size, 4096 * idx);
+		if (ret != buf_size)
+			break;
+
+		read_cnt += ret;
+	}
+	printf("Read %"PRIu64" bytes\n", read_cnt);
 	exit(0);
 }
 
@@ -697,6 +860,81 @@ static void do_copy(int argc, char **argv, const struct cmd_desc *cmd)
 	close(dst_fd);
 }
 
+#define get_cblocks_desc "get number of reserved blocks on compress inode"
+#define get_cblocks_help "f2fs_io get_cblocks [file]\n\n"
+
+static void do_get_cblocks(int argc, char **argv, const struct cmd_desc *cmd)
+{
+	unsigned long long blkcnt;
+	int ret, fd;
+
+	if (argc != 2) {
+		fputs("Excess arguments\n\n", stderr);
+		fputs(cmd->cmd_help, stderr);
+		exit(1);
+	}
+
+	fd = xopen(argv[1], O_RDONLY, 0);
+
+	ret = ioctl(fd, F2FS_IOC_GET_COMPRESS_BLOCKS, &blkcnt);
+	if (ret < 0)
+		die_errno("F2FS_IOC_GET_COMPRESS_BLOCKS failed");
+
+	printf("%llu\n", blkcnt);
+
+	exit(0);
+}
+
+#define release_cblocks_desc "release reserved blocks on compress inode"
+#define release_cblocks_help "f2fs_io release_cblocks [file]\n\n"
+
+static void do_release_cblocks(int argc, char **argv, const struct cmd_desc *cmd)
+{
+	unsigned long long blkcnt;
+	int ret, fd;
+
+	if (argc != 2) {
+		fputs("Excess arguments\n\n", stderr);
+		fputs(cmd->cmd_help, stderr);
+		exit(1);
+	}
+
+	fd = xopen(argv[1], O_RDONLY, 0);
+
+	ret = ioctl(fd, F2FS_IOC_RELEASE_COMPRESS_BLOCKS, &blkcnt);
+	if (ret < 0)
+		die_errno("F2FS_IOC_RELEASE_COMPRESS_BLOCKS failed");
+
+	printf("%llu\n", blkcnt);
+
+	exit(0);
+}
+
+#define reserve_cblocks_desc "reserve blocks on compress inode"
+#define reserve_cblocks_help "f2fs_io reserve_cblocks [file]\n\n"
+
+static void do_reserve_cblocks(int argc, char **argv, const struct cmd_desc *cmd)
+{
+	unsigned long long blkcnt;
+	int ret, fd;
+
+	if (argc != 2) {
+		fputs("Excess arguments\n\n", stderr);
+		fputs(cmd->cmd_help, stderr);
+		exit(1);
+	}
+
+	fd = xopen(argv[1], O_RDONLY, 0);
+
+	ret = ioctl(fd, F2FS_IOC_RESERVE_COMPRESS_BLOCKS, &blkcnt);
+	if (ret < 0)
+		die_errno("F2FS_IOC_RESERVE_COMPRESS_BLOCKS failed");
+
+	printf("%llu\n", blkcnt);
+
+	exit(0);
+}
+
 
 #define CMD_HIDDEN 	0x0001
 #define CMD(name) { #name, do_##name, name##_desc, name##_help, 0 }
@@ -705,6 +943,7 @@ static void do_copy(int argc, char **argv, const struct cmd_desc *cmd)
 static void do_help(int argc, char **argv, const struct cmd_desc *cmd);
 const struct cmd_desc cmd_list[] = {
 	_CMD(help),
+	CMD(fsync),
 	CMD(set_verity),
 	CMD(getflags),
 	CMD(setflags),
@@ -713,10 +952,14 @@ const struct cmd_desc cmd_list[] = {
 	CMD(fallocate),
 	CMD(write),
 	CMD(read),
+	CMD(randread),
 	CMD(fiemap),
 	CMD(gc_urgent),
 	CMD(defrag_file),
 	CMD(copy),
+	CMD(get_cblocks),
+	CMD(release_cblocks),
+	CMD(reserve_cblocks),
 	{ NULL, NULL, NULL, NULL, 0 }
 };
 
