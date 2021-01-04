@@ -332,6 +332,7 @@ struct device_info {
 	u_int32_t nr_zones;
 	u_int32_t nr_rnd_zones;
 	size_t zone_blocks;
+	size_t *zone_cap_blocks;
 };
 
 typedef struct {
@@ -371,6 +372,7 @@ struct f2fs_configuration {
 	__u8 sb_version[VERSION_LEN + 1];
 	__u8 version[VERSION_LEN + 1];
 	char *vol_label;
+	char *vol_uuid;
 	u_int16_t s_encoding;
 	u_int16_t s_encoding_flags;
 	int heap;
@@ -402,8 +404,10 @@ struct f2fs_configuration {
 	int large_nat_bitmap;
 	int fix_chksum;			/* fix old cp.chksum position */
 	__le32 feature;			/* defined features */
+	time_t fixed_time;
 
 	/* mkfs parameters */
+	int fake_seed;
 	u_int32_t next_free_nid;
 	u_int32_t quota_inum;
 	u_int32_t quota_dnum;
@@ -424,7 +428,6 @@ struct f2fs_configuration {
 	char *mount_point;
 	char *target_out_dir;
 	char *fs_config_file;
-	time_t fixed_time;
 #ifdef HAVE_LIBSELINUX
 	struct selinux_opt seopt_file[8];
 	int nr_opt;
@@ -536,6 +539,7 @@ struct f2fs_configuration {
 	(void) (&_max1 == &_max2);		\
 	_max1 > _max2 ? _max1 : _max2; })
 
+#define round_up(x, y)		(((x) + (y) - 1) / (y))
 /*
  * Copied from fs/f2fs/f2fs.h
  */
@@ -1324,13 +1328,42 @@ blk_zone_cond_str(struct blk_zone *blkz)
 	return "Unknown-cond";
 }
 
-#define blk_zone_empty(z)	(blk_zone_cond(z) == BLK_ZONE_COND_EMPTY)
+/*
+ * Handle kernel zone capacity support
+ */
+#ifndef HAVE_BLK_ZONE_REP_V2
+#define BLK_ZONE_REP_CAPACITY   (1 << 0)
+struct blk_zone_v2 {
+	__u64   start;          /* Zone start sector */
+	__u64   len;            /* Zone length in number of sectors */
+	__u64   wp;             /* Zone write pointer position */
+	__u8    type;           /* Zone type */
+	__u8    cond;           /* Zone condition */
+	__u8    non_seq;        /* Non-sequential write resources active */
+	__u8    reset;          /* Reset write pointer recommended */
+	__u8    resv[4];
+	__u64   capacity;       /* Zone capacity in number of sectors */
+	__u8    reserved[24];
+};
+#define blk_zone blk_zone_v2
 
+struct blk_zone_report_v2 {
+	__u64   sector;
+	__u32   nr_zones;
+	__u32   flags;
+struct blk_zone zones[0];
+};
+#define blk_zone_report blk_zone_report_v2
+#endif /* HAVE_BLK_ZONE_REP_V2 */
+
+#define blk_zone_empty(z)	(blk_zone_cond(z) == BLK_ZONE_COND_EMPTY)
 #define blk_zone_sector(z)	(z)->start
 #define blk_zone_length(z)	(z)->len
 #define blk_zone_wp_sector(z)	(z)->wp
 #define blk_zone_need_reset(z)	(int)(z)->reset
 #define blk_zone_non_seq(z)	(int)(z)->non_seq
+#define blk_zone_capacity(z, f) ((f & BLK_ZONE_REP_CAPACITY) ? \
+					(z)->capacity : (z)->len)
 
 #endif
 
@@ -1342,6 +1375,7 @@ extern int f2fs_report_zones(int, report_zones_cb_t *, void *);
 extern int f2fs_check_zones(int);
 int f2fs_reset_zone(int, void *);
 extern int f2fs_reset_zones(int);
+extern uint32_t f2fs_get_usable_segments(struct f2fs_super_block *sb);
 
 #define SIZE_ALIGN(val, size)	((val) + (size) - 1) / (size)
 #define SEG_ALIGN(blks)		SIZE_ALIGN(blks, c.blks_per_seg)
@@ -1352,6 +1386,7 @@ static inline double get_best_overprovision(struct f2fs_super_block *sb)
 {
 	double reserved, ovp, candidate, end, diff, space;
 	double max_ovp = 0, max_space = 0;
+	u_int32_t usable_main_segs = f2fs_get_usable_segments(sb);
 
 	if (get_sb(segment_count_main) < 256) {
 		candidate = 10;
@@ -1365,9 +1400,9 @@ static inline double get_best_overprovision(struct f2fs_super_block *sb)
 
 	for (; candidate <= end; candidate += diff) {
 		reserved = (2 * (100 / candidate + 1) + 6) *
-						get_sb(segs_per_sec);
-		ovp = (get_sb(segment_count_main) - reserved) * candidate / 100;
-		space = get_sb(segment_count_main) - reserved - ovp;
+				round_up(usable_main_segs, get_sb(section_count));
+		ovp = (usable_main_segs - reserved) * candidate / 100;
+		space = usable_main_segs - reserved - ovp;
 		if (max_space < space) {
 			max_space = space;
 			max_ovp = candidate;
@@ -1526,6 +1561,7 @@ extern const struct f2fs_nls_table *f2fs_load_nls_table(int encoding);
 #define F2FS_ENC_UTF8_12_0	1
 
 extern int f2fs_str2encoding(const char *string);
+extern char *f2fs_encoding2str(const int encoding);
 extern int f2fs_get_encoding_flags(int encoding);
 extern int f2fs_str2encoding_flags(char **param, __u16 *flags);
 

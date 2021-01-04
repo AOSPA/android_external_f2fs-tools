@@ -104,10 +104,18 @@ static int set_perms_and_caps(struct dentry *de)
 	uint64_t capabilities = 0;
 	unsigned int uid = 0, gid = 0, imode = 0;
 	char *mnt_path = NULL;
+	char *mount_path = c.mount_point;
 
-	if (asprintf(&mnt_path, "%s%s", c.mount_point, de->path) <= 0) {
+	/*
+	 * de->path already has "/" in the beginning of it.
+	 * Need to remove "/" when c.mount_point is "/", not to add it twice.
+	 */
+	if (strlen(c.mount_point) == 1 && c.mount_point[0] == '/')
+		mount_path = "";
+
+	if (asprintf(&mnt_path, "%s%s", mount_path, de->path) <= 0) {
 		ERR_MSG("cannot allocate mount path for %s%s\n",
-				c.mount_point, de->path);
+				mount_path, de->path);
 		return -ENOMEM;
 	}
 
@@ -312,6 +320,9 @@ skip:
 int f2fs_sload(struct f2fs_sb_info *sbi)
 {
 	int ret = 0;
+
+	/* this requires for the below sanity checks */
+	fsck_init(sbi);
 
 	ret = configure_files();
 	if (ret) {
