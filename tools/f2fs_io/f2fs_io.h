@@ -91,7 +91,7 @@ typedef u32	__be32;
 #define F2FS_IOC_DECOMPRESS_FILE        _IO(F2FS_IOCTL_MAGIC, 23)
 #define F2FS_IOC_COMPRESS_FILE          _IO(F2FS_IOCTL_MAGIC, 24)
 
-#ifndef FSCRYPT_POLICY_V1
+#ifndef FS_IOC_GET_ENCRYPTION_POLICY
 #define FSCRYPT_POLICY_V1		0
 #define FSCRYPT_KEY_DESCRIPTOR_SIZE	8
 struct fscrypt_policy_v1 {
@@ -101,12 +101,10 @@ struct fscrypt_policy_v1 {
 	__u8 flags;
 	__u8 master_key_descriptor[FSCRYPT_KEY_DESCRIPTOR_SIZE];
 };
-#endif
-#ifndef FS_IOC_GET_ENCRYPTION_POLICY
 #define FS_IOC_GET_ENCRYPTION_POLICY		_IOW('f', 21, struct fscrypt_policy_v1)
 #endif
 
-#ifndef FSCRYPT_POLICY_V2
+#ifndef FS_IOC_GET_ENCRYPTION_POLICY_EX
 #define FSCRYPT_POLICY_V2		2
 #define FSCRYPT_KEY_IDENTIFIER_SIZE	16
 struct fscrypt_policy_v2 {
@@ -126,8 +124,6 @@ struct fscrypt_get_policy_ex_arg {
 		struct fscrypt_policy_v2 v2;
 	} policy; /* output */
 };
-#endif
-#ifndef FS_IOC_GET_ENCRYPTION_POLICY_EX
 #define FS_IOC_GET_ENCRYPTION_POLICY_EX		_IOWR('f', 22, __u8[9]) /* size + version */
 #endif
 

@@ -278,7 +278,7 @@ static void dump_node_blk(struct f2fs_sb_info *sbi, int ntype,
 
 	if (nid == 0) {
 		*ofs += skip;
-		goto out;
+		return;
 	}
 
 	for (i = 0; i < idx; i++, (*ofs)++) {
@@ -297,7 +297,6 @@ static void dump_node_blk(struct f2fs_sb_info *sbi, int ntype,
 			break;
 		}
 	}
-out:
 	free(node_blk);
 }
 
