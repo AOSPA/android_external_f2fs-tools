@@ -28,6 +28,7 @@
 #endif
 
 #include "f2fs_fs.h"
+#include "quota.h"
 #include "f2fs_format_utils.h"
 
 #ifdef WITH_ANDROID
@@ -110,11 +111,16 @@ static void add_default_options(void)
 		/* -d1 -f -O encrypt -O quota -O verity -w 4096 -R 0:0 */
 		c.dbg_lv = 1;
 		force_overwrite = 1;
+		c.wanted_sector_size = 4096;
+		c.root_uid = c.root_gid = 0;
+
+		/* RO doesn't need any other features */
+		if (c.feature & cpu_to_le32(F2FS_FEATURE_RO))
+			return;
+
 		c.feature |= cpu_to_le32(F2FS_FEATURE_ENCRYPT);
 		c.feature |= cpu_to_le32(F2FS_FEATURE_QUOTA_INO);
 		c.feature |= cpu_to_le32(F2FS_FEATURE_VERITY);
-		c.wanted_sector_size = 4096;
-		c.root_uid = c.root_gid = 0;
 		break;
 	}
 #ifdef CONF_CASEFOLD
@@ -122,9 +128,17 @@ static void add_default_options(void)
 	c.feature |= cpu_to_le32(F2FS_FEATURE_CASEFOLD);
 #endif
 #ifdef CONF_PROJID
+	c.feature |= cpu_to_le32(F2FS_FEATURE_QUOTA_INO);
 	c.feature |= cpu_to_le32(F2FS_FEATURE_PRJQUOTA);
 	c.feature |= cpu_to_le32(F2FS_FEATURE_EXTRA_ATTR);
 #endif
+
+	if (c.feature & cpu_to_le32(F2FS_FEATURE_QUOTA_INO))
+		c.quota_bits = QUOTA_USR_BIT | QUOTA_GRP_BIT;
+	if (c.feature & cpu_to_le32(F2FS_FEATURE_PRJQUOTA)) {
+		c.feature |= cpu_to_le32(F2FS_FEATURE_QUOTA_INO);
+		c.quota_bits |= QUOTA_PRJ_BIT;
+	}
 }
 
 static void f2fs_parse_options(int argc, char *argv[])
@@ -391,18 +405,42 @@ int main(int argc, char *argv[])
 
 	c.func = MKFS;
 
-	if (!force_overwrite && f2fs_check_overwrite()) {
-		MSG(0, "\tUse the -f option to force overwrite.\n");
-		return -1;
-	}
-
 	if (f2fs_devs_are_umounted() < 0) {
 		if (errno != EBUSY)
 			MSG(0, "\tError: Not available on mounted device!\n");
-		return -1;
+		goto err_format;
 	}
 
 	if (f2fs_get_device_info() < 0)
+		return -1;
+
+	if (f2fs_check_overwrite()) {
+		char *zero_buf = NULL;
+		int i;
+
+		if (!force_overwrite) {
+			MSG(0, "\tUse the -f option to force overwrite.\n");
+			goto err_format;
+		}
+		zero_buf = calloc(F2FS_BLKSIZE, 1);
+		if (!zero_buf) {
+			MSG(0, "\tError: Fail to allocate zero buffer.\n");
+			goto err_format;
+		}
+		/* wipe out other FS magics mostly first 4MB space */
+		for (i = 0; i < 1024; i++)
+			if (dev_fill_block(zero_buf, i))
+				break;
+		free(zero_buf);
+		if (i != 1024) {
+			MSG(0, "\tError: Fail to fill zeros till %d.\n", i);
+			goto err_format;
+		}
+		if (f2fs_fsync_device())
+			goto err_format;
+	}
+
+	if (f2fs_get_f2fs_info() < 0)
 		goto err_format;
 
 	/*
