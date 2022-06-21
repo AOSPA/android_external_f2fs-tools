@@ -51,9 +51,7 @@
 #endif
 #include <sys/types.h>
 
-#ifdef HAVE_KERNEL_UAPI_LINUX_BLKZONED_H
-#include <kernel/uapi/linux/blkzoned.h>
-#elif defined(HAVE_LINUX_BLKZONED_H)
+#ifdef HAVE_LINUX_BLKZONED_H
 #include <linux/blkzoned.h>
 #endif
 

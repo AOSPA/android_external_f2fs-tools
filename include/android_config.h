@@ -1,11 +1,8 @@
 #if defined(__linux__)
-#define HAVE_BLK_ZONE_REP_V2 1
 #define HAVE_BYTESWAP_H 1
 #define HAVE_FCNTL_H 1
 #define HAVE_FALLOC_H 1
 #define HAVE_FSYNC 1
-#define HAVE_KERNEL_UAPI_LINUX_BLKZONED_H 1
-#define HAVE_LINUX_BLKZONED_H 1
 #define HAVE_LINUX_HDREG_H 1
 #define HAVE_LINUX_LIMITS_H 1
 #define HAVE_POSIX_ACL_H 1
