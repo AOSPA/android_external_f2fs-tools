@@ -1,5 +1,4 @@
 #if defined(__linux__)
-#define HAVE_BLK_ZONE_REP_V2 1
 #define HAVE_BYTESWAP_H 1
 #define HAVE_FCNTL_H 1
 #define HAVE_FALLOC_H 1
@@ -39,10 +38,6 @@
 
 #ifdef WITH_SLOAD
 #define HAVE_LIBSELINUX 1
-#endif
-
-#if defined(__BIONIC__)
-#define HAVE_LINUX_BLKZONED_H 1
 #endif
 
 #endif
