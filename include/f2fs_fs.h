@@ -203,12 +203,12 @@ static inline uint64_t bswap_64(uint64_t val)
 #endif
 
 #if __BYTE_ORDER == __LITTLE_ENDIAN
-#define le16_to_cpu(x)	((uint16_t)(x))
-#define le32_to_cpu(x)	((uint32_t)(x))
-#define le64_to_cpu(x)	((uint64_t)(x))
-#define cpu_to_le16(x)	((uint16_t)(x))
-#define cpu_to_le32(x)	((uint32_t)(x))
-#define cpu_to_le64(x)	((uint64_t)(x))
+#define le16_to_cpu(x)	((__u16)(x))
+#define le32_to_cpu(x)	((__u32)(x))
+#define le64_to_cpu(x)	((__u64)(x))
+#define cpu_to_le16(x)	((__u16)(x))
+#define cpu_to_le32(x)	((__u32)(x))
+#define cpu_to_le64(x)	((__u64)(x))
 #define be32_to_cpu(x)	__builtin_bswap64(x)
 #elif __BYTE_ORDER == __BIG_ENDIAN
 #define le16_to_cpu(x)	bswap_16(x)
@@ -217,7 +217,7 @@ static inline uint64_t bswap_64(uint64_t val)
 #define cpu_to_le16(x)	bswap_16(x)
 #define cpu_to_le32(x)	bswap_32(x)
 #define cpu_to_le64(x)	bswap_64(x)
-#define be32_to_cpu(x)	((uint64_t)(x))
+#define be32_to_cpu(x)	((__u64)(x))
 #endif
 
 #define typecheck(type,x) \
@@ -308,10 +308,10 @@ static inline uint64_t bswap_64(uint64_t val)
 	do {								\
 		assert(sizeof((ptr)->member) == 8);			\
 		if (c.layout)						\
-			printf("%-30s %" PRIu64 "\n",			\
+			printf("%-30s %llu\n",				\
 			#member":", le64_to_cpu(((ptr)->member)));	\
 		else							\
-			printf("%-30s" "\t\t[0x%8" PRIx64 " : %" PRIu64 "]\n",	\
+			printf("%-30s" "\t\t[0x%8llx : %llu]\n",	\
 			#member, le64_to_cpu(((ptr)->member)),		\
 			le64_to_cpu(((ptr)->member)));			\
 	} while (0)
